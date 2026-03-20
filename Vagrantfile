@@ -13,7 +13,8 @@ Vagrant.configure("2") do |config|
   config.vm.box = "bento/ubuntu-24.04"
   
   # Use rsync to sync folders when running from WSL to Windows VirtualBox
-  config.vm.synced_folder ".", "/vagrant", type: "rsync"
+  config.vm.synced_folder ".", "/vagrant", type: "rsync",
+    rsync__exclude: [".git/", "frontend/node_modules/", "backend/venv/", "backend/.venv/"]
 
   # Assign a static IP so you always know where your dashboard is
   config.vm.network "private_network", ip: "192.168.56.10"
@@ -30,8 +31,8 @@ Vagrant.configure("2") do |config|
 
   # Allocate reasonable resources (using virtualbox)
   config.vm.provider "virtualbox" do |vb|
-    vb.memory = "2048"
-    vb.cpus   = 2
+    vb.memory = "8192"
+    vb.cpus   = 6
     vb.gui    = false # GUI is usually not needed for server-manager
   end
 
