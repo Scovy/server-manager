@@ -4,6 +4,9 @@ set -e
 # Homelab Dashboard — Backend Entrypoint Script
 # This script runs migrations before starting the application server.
 
+# Ensure the app package is in the PYTHONPATH
+export PYTHONPATH=$PYTHONPATH:.
+
 echo "Running database migrations..."
 alembic upgrade head
 

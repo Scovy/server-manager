@@ -2,6 +2,9 @@
 
 services:
   backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
     image: ghcr.io/scovy/server-manager-backend:latest
     container_name: homelab_backend
     restart: unless-stopped
@@ -24,6 +27,9 @@ services:
         max-file: "3"
 
   frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
     image: ghcr.io/scovy/server-manager-frontend:latest
     container_name: homelab_frontend
     restart: unless-stopped
