@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import AsyncClient
@@ -15,7 +15,7 @@ async def test_metrics_service_snapshot():
     from app.services.metrics_service import metrics_service
 
     # We don't mock psutil here to ensure it actually works on the host
-    snapshot = metrics_service.get_snapshot()
+    snapshot = await metrics_service.get_snapshot()
 
     assert isinstance(snapshot, MetricsSnapshot)
     assert 0 <= snapshot.cpu_percent <= 100
@@ -26,7 +26,7 @@ async def test_metrics_service_snapshot():
 
 
 @pytest.mark.asyncio
-@patch("app.routers.metrics.metrics_service")
+@patch("app.routers.metrics.metrics_service", new_callable=AsyncMock)
 async def test_ws_metrics_connects(mock_service, client: AsyncClient):
     """WebSocket should connect and send a snapshot JSON message."""
     # Mock the snapshot so we know exactly what is sent
