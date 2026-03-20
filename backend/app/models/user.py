@@ -28,6 +28,4 @@ class User(Base):
     password: Mapped[str] = mapped_column(String, nullable=False)
     totp_secret: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     role: Mapped[str] = mapped_column(String, default="admin")
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

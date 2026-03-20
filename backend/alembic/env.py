@@ -7,12 +7,12 @@ It uses the async engine from our application to run migrations.
 import asyncio
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.config import settings
+from alembic import context
 
 # Import Base with all models registered
+from app.config import settings
 from app.models import Base
 
 # Alembic Config object

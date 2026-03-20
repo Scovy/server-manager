@@ -5,8 +5,8 @@ and includes all routers. Database migrations run automatically on startup.
 """
 
 import logging
-from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,8 +27,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Run migrations on startup
     logger.info("Running database migrations...")
     try:
-        from alembic.config import Config
         from alembic import command
+        from alembic.config import Config
 
         alembic_cfg = Config("alembic.ini")
         command.upgrade(alembic_cfg, "head")

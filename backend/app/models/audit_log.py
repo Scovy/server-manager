@@ -25,12 +25,8 @@ class AuditLog(Base):
     __tablename__ = "audit_log"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    timestamp: Mapped[datetime] = mapped_column(
-        DateTime, server_default=func.now()
-    )
-    user_id: Mapped[Optional[int]] = mapped_column(
-        Integer, ForeignKey("users.id"), nullable=True
-    )
+    timestamp: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    user_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
     action: Mapped[str] = mapped_column(String, nullable=False)
     target: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     ip_address: Mapped[Optional[str]] = mapped_column(String, nullable=True)
