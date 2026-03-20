@@ -49,7 +49,7 @@ describe('Dashboard Page', () => {
   it('renders dashboard title', () => {
     renderWithProviders(<Dashboard />);
 
-    expect(screen.getByText('Dashboard')).toBeInTheDocument();
+    expect(screen.getByText('System Overview')).toBeInTheDocument();
   });
 
   it('shows placeholder metric cards', () => {
@@ -58,6 +58,6 @@ describe('Dashboard Page', () => {
     expect(screen.getByText('CPU Usage')).toBeInTheDocument();
     expect(screen.getByText('Memory')).toBeInTheDocument();
     expect(screen.getByText('Disk Usage')).toBeInTheDocument();
-    expect(screen.getByText('Network')).toBeInTheDocument();
+    expect(screen.getByText('Network (Sent)')).toBeInTheDocument();
   });
 });
