@@ -40,6 +40,7 @@ if [ ! -f .env ]; then
   # check if .env.example exists before copying
   if [ -f backend/.env.example ]; then
     cp backend/.env.example .env
+    sed -i 's|sqlite+aiosqlite:///./homelab.db|sqlite+aiosqlite:///./data/homelab.db|' .env
     echo "Created .env from template"
   else
     echo "Warning: backend/.env.example not found. Stack might not start correctly."
