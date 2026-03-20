@@ -68,7 +68,7 @@ export default function MetricChart({
               fontSize={11}
               tickLine={false}
               axisLine={false}
-              tickFormatter={(val: any) => `${Number(val)}${unit}`}
+              tickFormatter={(val: unknown) => `${Number(val)}${unit}`}
               domain={[0, yMax]}
             />
             <Tooltip
@@ -80,7 +80,7 @@ export default function MetricChart({
                 boxShadow: 'var(--shadow-md)',
               }}
               itemStyle={{ color: 'var(--color-text-primary)', fontWeight: 600 }}
-              formatter={(value: any) => [`${(Number(value) || 0).toFixed(1)}${unit}`, title]}
+              formatter={(value: unknown) => [`${(Number(value) || 0).toFixed(1)}${unit}`, title]}
               labelStyle={{ color: 'var(--color-text-muted)', marginBottom: '4px' }}
             />
             <Area
