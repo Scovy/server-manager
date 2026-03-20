@@ -1,0 +1,51 @@
+# Run with: docker compose -f docker-compose.prod.yml up -d
+
+services:
+  backend:
+    image: ghcr.io/scovy/server-manager-backend:latest
+    container_name: homelab_backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - backend_data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/api/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  frontend:
+    image: ghcr.io/scovy/server-manager-frontend:latest
+    container_name: homelab_frontend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: homelab_caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+      - frontend
+
+volumes:
+  backend_data:
+  caddy_data:
+  caddy_config:
