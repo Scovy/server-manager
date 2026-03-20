@@ -1,0 +1,23 @@
+# Homelab Dashboard — Development Stack
+# Run with: docker compose -f docker-compose.dev.yml up
+
+services:
+  # Backend running with auto-reload
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: homelab_backend_dev
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    env_file:
+      - ./backend/.env
+    volumes:
+      # Mount source code for hot reload
+      - ./backend:/app
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "8000:8000"
+
+  # We don't run frontend in Docker for dev,
+  # instead run it natively with `cd frontend && npm run dev`
+  # for faster HMR and better DX.
