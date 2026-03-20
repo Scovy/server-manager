@@ -140,7 +140,7 @@ export default function Dashboard() {
         <MetricChart
           title="Network Sent"
           data={chartData.map(d => ({ ...d, net_mb: d.net_sent / (1024 * 1024) }))}
-          dataKey={"net_mb" as any}
+          dataKey="net_mb"
           color="var(--color-success)"
           unit=" MB"
         />

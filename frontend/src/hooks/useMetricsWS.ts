@@ -16,7 +16,7 @@
  * ```
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { MetricsSnapshot, WSStatus } from '../types/metrics';
 
 export interface ChartPoint {
@@ -26,6 +26,7 @@ export interface ChartPoint {
   disk: number;
   net_sent: number;
   net_recv: number;
+  net_mb?: number;
 }
 
 interface UseMetricsWSResult {
@@ -57,64 +58,65 @@ export function useMetricsWS(): UseMetricsWSResult {
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
 
-  const connect = useCallback(() => {
-    if (!mountedRef.current) return;
-
-    const url = buildWsUrl();
-    setStatus('connecting');
-
-    const ws = new WebSocket(url);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      if (!mountedRef.current) return;
-      setStatus('connected');
-      retryMsRef.current = INITIAL_RETRY_MS; // reset backoff on success
-    };
-
-    ws.onmessage = (event: MessageEvent) => {
-      if (!mountedRef.current) return;
-      try {
-        const snapshot = JSON.parse(event.data as string) as MetricsSnapshot;
-        setCurrent(snapshot);
-
-        const point: ChartPoint = {
-          time: new Date().toLocaleTimeString(),
-          cpu: snapshot.cpu_percent,
-          ram: snapshot.ram_percent,
-          disk: snapshot.disk_percent,
-          net_sent: snapshot.net_bytes_sent,
-          net_recv: snapshot.net_bytes_recv,
-        };
-
-        setHistory((prev) => {
-          const next = [...prev, point];
-          return next.length > MAX_HISTORY ? next.slice(next.length - MAX_HISTORY) : next;
-        });
-      } catch {
-        // Ignore malformed messages
-      }
-    };
-
-    ws.onerror = () => {
-      // onclose will fire immediately after; let it handle retry
-    };
-
-    ws.onclose = () => {
-      if (!mountedRef.current) return;
-      setStatus('reconnecting');
-
-      const delay = retryMsRef.current;
-      retryMsRef.current = Math.min(delay * 2, MAX_RETRY_MS);
-
-      retryTimerRef.current = setTimeout(() => {
-        if (mountedRef.current) connect();
-      }, delay);
-    };
-  }, []);
-
   useEffect(() => {
     mountedRef.current = true;
+
+    function connect() {
+      if (!mountedRef.current) return;
+
+      const url = buildWsUrl();
+      setStatus('connecting');
+
+      const ws = new WebSocket(url);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        if (!mountedRef.current) return;
+        setStatus('connected');
+        retryMsRef.current = INITIAL_RETRY_MS;
+      };
+
+      ws.onmessage = (event: MessageEvent) => {
+        if (!mountedRef.current) return;
+        try {
+          const snapshot = JSON.parse(event.data as string) as MetricsSnapshot;
+          setCurrent(snapshot);
+
+          const point: ChartPoint = {
+            time: new Date().toLocaleTimeString(),
+            cpu: snapshot.cpu_percent,
+            ram: snapshot.ram_percent,
+            disk: snapshot.disk_percent,
+            net_sent: snapshot.net_bytes_sent,
+            net_recv: snapshot.net_bytes_recv,
+          };
+
+          setHistory((prev) => {
+            const next = [...prev, point];
+            return next.length > MAX_HISTORY ? next.slice(next.length - MAX_HISTORY) : next;
+          });
+        } catch {
+          // Ignore malformed messages
+        }
+      };
+
+      ws.onerror = () => {
+        // onclose will fire immediately after; let it handle retry
+      };
+
+      ws.onclose = () => {
+        if (!mountedRef.current) return;
+        setStatus('reconnecting');
+
+        const delay = retryMsRef.current;
+        retryMsRef.current = Math.min(delay * 2, MAX_RETRY_MS);
+
+        retryTimerRef.current = setTimeout(() => {
+          if (mountedRef.current) connect();
+        }, delay);
+      };
+    }
+
     connect();
 
     return () => {
@@ -122,7 +124,7 @@ export function useMetricsWS(): UseMetricsWSResult {
       if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
       wsRef.current?.close();
     };
-  }, [connect]);
+  }, []);
 
   return { current, history, status };
 }

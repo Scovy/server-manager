@@ -5,7 +5,8 @@
  * and webhook URL, and saves via PUT /api/metrics/alerts.
  */
 
-import { FormEvent, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
+import type { FormEvent } from 'react';
 import { fetchAlertConfig, updateAlertConfig } from '../api/metricsApi';
 import type { AlertConfig } from '../types/metrics';
 import './AlertConfigPanel.css';
@@ -38,8 +39,8 @@ export default function AlertConfigPanel() {
       setConfig(updated);
       setSuccess('Alert configuration saved successfully.');
       setTimeout(() => setSuccess(''), 3000);
-    } catch (err: any) {
-      setError(err.message || 'Failed to preserve config.');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to preserve config.');
     } finally {
       setSaving(false);
     }

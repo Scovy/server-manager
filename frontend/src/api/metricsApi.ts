@@ -1,13 +1,14 @@
-"""API client functions for metrics endpoints.
-
-All functions use the native fetch API so they can be used inside
-TanStack Query hooks or standalone async calls.
-
-Endpoints consumed:
-    GET  /api/metrics/history  — historical snapshots
-    GET  /api/metrics/alerts   — alert threshold configuration
-    PUT  /api/metrics/alerts   — update thresholds
-"""
+/**
+ * API client functions for metrics endpoints.
+ *
+ * All functions use the native fetch API so they can be used inside
+ * TanStack Query hooks or standalone async calls.
+ *
+ * Endpoints consumed:
+ *     GET  /api/metrics/history  — historical snapshots
+ *     GET  /api/metrics/alerts   — alert threshold configuration
+ *     PUT  /api/metrics/alerts   — update thresholds
+ */
 
 import type { AlertConfig, HistoryPoint } from '../types/metrics';
 
