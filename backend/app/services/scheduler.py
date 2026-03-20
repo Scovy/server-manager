@@ -42,7 +42,7 @@ async def _record_metrics(session_factory: async_sessionmaker[AsyncSession]) -> 
         session_factory: Factory for creating async DB sessions.
     """
     try:
-        snapshot = metrics_service.get_snapshot()
+        snapshot = await metrics_service.get_snapshot()
         row = MetricsHistory(
             timestamp=datetime.utcnow(),
             cpu_percent=snapshot.cpu_percent,

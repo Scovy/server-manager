@@ -107,15 +107,24 @@ class MetricsService:
         print(snapshot.cpu_percent)
     """
 
-    def get_snapshot(self) -> MetricsSnapshot:
+    async def get_snapshot(self) -> MetricsSnapshot:
         """Return a complete metrics snapshot for the current moment.
 
         Collects host metrics via psutil and per-container stats via Docker.
         Docker errors are caught and logged; the snapshot still returns with
         an empty ``containers`` list in that case.
 
+        Runs blocking IO in a separate thread to avoid hanging the event loop.
+
         Returns:
             MetricsSnapshot with current CPU, RAM, disk, network and container data.
+        """
+        import asyncio
+
+        return await asyncio.to_thread(self._get_snapshot_sync)
+
+    def _get_snapshot_sync(self) -> MetricsSnapshot:
+        """Synchronous implementation of metrics collection.
         """
         # ── Host metrics (psutil) ─────────────────────────────────────────────
         cpu = psutil.cpu_percent(interval=None)

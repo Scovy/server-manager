@@ -34,18 +34,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     - Stops the scheduler gracefully.
     """
     # ── Startup ───────────────────────────────────────────────────────────────
-    logger.info("Running database migrations...")
-    try:
-        from alembic import command  # type: ignore[attr-defined]
-        from alembic.config import Config
-
-        alembic_cfg = Config("alembic.ini")
-        command.upgrade(alembic_cfg, "head")
-        logger.info("Database migrations completed.")
-    except Exception as e:
-        logger.warning(f"Migration warning: {e}")
-        logger.info("If this is the first run, migrations may not exist yet.")
-
     # Start background metrics scheduler
     scheduler: AsyncIOScheduler = start_scheduler(async_session)
 

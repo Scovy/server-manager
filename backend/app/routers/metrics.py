@@ -61,7 +61,10 @@ async def _get_alert_config(db: AsyncSession) -> dict[str, Any]:
     if setting is None or not setting.value:
         return DEFAULT_ALERT_CONFIG.copy()
     try:
-        return dict(json.loads(str(setting.value)))
+        data = json.loads(str(setting.value))
+        if not isinstance(data, dict):
+            return DEFAULT_ALERT_CONFIG.copy()
+        return dict(data)
     except (json.JSONDecodeError, ValueError, TypeError):
         return DEFAULT_ALERT_CONFIG.copy()
 
@@ -138,7 +141,7 @@ async def ws_metrics(websocket: WebSocket, db: AsyncSession = Depends(get_db)) -
 
     try:
         while True:
-            snapshot = metrics_service.get_snapshot()
+            snapshot = await metrics_service.get_snapshot()
 
             # Check alerts (max once per 5 min per metric to avoid spam)
             now = datetime.utcnow()
