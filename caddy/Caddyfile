@@ -1,0 +1,27 @@
+{
+  "email": "scovilsyn@gmail.com"
+}
+# Homelab Dashboard — Caddy Reverse Proxy Configuration
+
+{$DOMAIN:localhost} {
+    # Forward API requests to backend
+    handle /api/* {
+        reverse_proxy backend:8000
+    }
+
+    # Forward WebSocket requests to backend
+    handle /ws/* {
+        reverse_proxy backend:8000
+    }
+
+    # Forward everything else to frontend React SPA
+    handle {
+        reverse_proxy frontend:3000
+    }
+
+    # Enable compression
+    encode gzip zstd
+}
+
+# The Admin API is available internally on port 2019
+# We will use this in Phase 4 to dynamically add routes for marketplace apps
