@@ -79,11 +79,17 @@ async def _maybe_send_alert(snapshot: MetricsSnapshot, config: dict[str, Any]) -
 
     alerts: list[str] = []
     if snapshot.cpu_percent >= config.get("cpu_threshold", 80):
-        alerts.append(f"🔴 CPU: **{snapshot.cpu_percent:.1f}%** (threshold {config['cpu_threshold']}%)")
+        alerts.append(
+            f"🔴 CPU: **{snapshot.cpu_percent:.1f}%** (threshold {config['cpu_threshold']}%)"
+        )
     if snapshot.ram_percent >= config.get("ram_threshold", 85):
-        alerts.append(f"🔴 RAM: **{snapshot.ram_percent:.1f}%** (threshold {config['ram_threshold']}%)")
+        alerts.append(
+            f"🔴 RAM: **{snapshot.ram_percent:.1f}%** (threshold {config['ram_threshold']}%)"
+        )
     if snapshot.disk_percent >= config.get("disk_threshold", 90):
-        alerts.append(f"🔴 Disk: **{snapshot.disk_percent:.1f}%** (threshold {config['disk_threshold']}%)")
+        alerts.append(
+            f"🔴 Disk: **{snapshot.disk_percent:.1f}%** (threshold {config['disk_threshold']}%)"
+        )
 
     if not alerts:
         return

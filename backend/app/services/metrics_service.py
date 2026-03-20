@@ -85,8 +85,7 @@ def _calc_container_cpu(stats: dict[str, Any]) -> float:
             - stats["precpu_stats"]["cpu_usage"]["total_usage"]
         )
         system_delta = (
-            stats["cpu_stats"]["system_cpu_usage"]
-            - stats["precpu_stats"]["system_cpu_usage"]
+            stats["cpu_stats"]["system_cpu_usage"] - stats["precpu_stats"]["system_cpu_usage"]
         )
         num_cpus = stats["cpu_stats"].get("online_cpus") or len(
             stats["cpu_stats"]["cpu_usage"].get("percpu_usage", [1])

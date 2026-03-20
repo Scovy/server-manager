@@ -15,8 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.database import async_session
-from app.routers import health
-from app.routers import metrics
+from app.routers import health, metrics
 from app.services.scheduler import start_scheduler, stop_scheduler
 
 logger = logging.getLogger(__name__)

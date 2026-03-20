@@ -55,7 +55,11 @@ async def _record_metrics(session_factory: async_sessionmaker[AsyncSession]) -> 
         async with session_factory() as session:
             session.add(row)
             await session.commit()
-        logger.debug("Metrics snapshot saved: cpu=%.1f%% ram=%.1f%%", snapshot.cpu_percent, snapshot.ram_percent)
+        logger.debug(
+            "Metrics snapshot saved: cpu=%.1f%% ram=%.1f%%",
+            snapshot.cpu_percent,
+            snapshot.ram_percent,
+        )
     except Exception as e:
         logger.error("Failed to record metrics snapshot: %s", e)
 
@@ -78,7 +82,11 @@ async def _prune_old_metrics(session_factory: async_sessionmaker[AsyncSession]) 
             await session.commit()
             deleted = result.rowcount
         if deleted:
-            logger.info("Pruned %d old metrics rows (older than %d days)", deleted, HISTORY_TTL_DAYS)
+            logger.info(
+                "Pruned %d old metrics rows (older than %d days)",
+                deleted,
+                HISTORY_TTL_DAYS,
+            )
     except Exception as e:
         logger.error("Failed to prune metrics history: %s", e)
 

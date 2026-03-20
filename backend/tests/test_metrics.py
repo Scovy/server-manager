@@ -1,10 +1,8 @@
-import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from httpx import AsyncClient
 
-from app.models.setting import Setting
 from app.services.metrics_service import MetricsSnapshot
 
 # Note: We use the `client` fixture from conftest.py which sets up

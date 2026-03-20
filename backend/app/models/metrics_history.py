@@ -28,9 +28,7 @@ class MetricsHistory(Base):
     __tablename__ = "metrics_history"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    timestamp: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, nullable=False
-    )
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     cpu_percent: Mapped[float] = mapped_column(Float, nullable=False)
     ram_percent: Mapped[float] = mapped_column(Float, nullable=False)
     ram_used_mb: Mapped[int] = mapped_column(Integer, nullable=False)
