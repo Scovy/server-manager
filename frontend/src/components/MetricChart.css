@@ -1,0 +1,30 @@
+.metric-chart {
+  display: flex;
+  flex-direction: column;
+  height: 280px;
+  padding: var(--space-md);
+}
+
+.metric-chart__title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: var(--space-md);
+}
+
+.metric-chart__container {
+  flex: 1;
+  min-height: 0; /* Important for ResponsiveContainer flex sizing */
+}
+
+/* Recharts overrides for custom theme */
+.recharts-cartesian-grid-horizontal line {
+  stroke-opacity: 0.4;
+}
+
+.recharts-tooltip-cursor {
+  stroke: var(--color-border) !important;
+  stroke-dasharray: 4 4;
+}

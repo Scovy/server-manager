@@ -1,0 +1,112 @@
+.alert-panel {
+  grid-column: 1 / -1;
+  padding: 0;
+  overflow: hidden;
+}
+
+.alert-panel__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-md) var(--space-lg);
+  cursor: pointer;
+  background: var(--color-bg-card);
+  transition: background var(--transition-fast);
+}
+
+.alert-panel__header:hover {
+  background: var(--color-bg-hover);
+}
+
+.alert-panel__title-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.alert-panel__title {
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.alert-panel__icon {
+  font-size: 1.25rem;
+}
+
+.alert-panel__toggle {
+  padding: var(--space-xs) var(--space-sm);
+  font-size: var(--text-xs);
+}
+
+.alert-panel__content {
+  padding: var(--space-md) var(--space-lg) var(--space-lg);
+  border-top: 1px solid var(--color-border);
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.alert-panel__loading {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  padding: var(--space-md) 0;
+}
+
+.alert-panel__help {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  margin-bottom: var(--space-lg);
+}
+
+.alert-panel__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.alert-panel__row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--space-md);
+}
+
+.alert-panel__field {
+  display: flex;
+  flex-direction: column;
+}
+
+.alert-panel__field.full-width {
+  margin-top: var(--space-xs);
+}
+
+/* Custom input style for narrow number inputs */
+.alert-panel__field input[type="number"] {
+  font-variant-numeric: tabular-nums;
+  max-width: 120px;
+}
+
+.alert-panel__actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--space-sm);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--color-border);
+}
+
+.alert-panel__msg {
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  margin-bottom: var(--space-md);
+}
+
+.alert-panel__msg.error {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--color-danger);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.alert-panel__msg.success {
+  background: rgba(34, 197, 94, 0.1);
+  color: var(--color-success);
+  border: 1px solid rgba(34, 197, 94, 0.2);
+}
