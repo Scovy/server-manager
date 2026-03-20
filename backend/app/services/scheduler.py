@@ -80,7 +80,7 @@ async def _prune_old_metrics(session_factory: async_sessionmaker[AsyncSession]) 
                 delete(MetricsHistory).where(MetricsHistory.timestamp < cutoff)
             )
             await session.commit()
-            deleted = result.rowcount
+            deleted = int(getattr(result, "rowcount", 0))
         if deleted:
             logger.info(
                 "Pruned %d old metrics rows (older than %d days)",

@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ── Startup ───────────────────────────────────────────────────────────────
     logger.info("Running database migrations...")
     try:
-        from alembic import command
+        from alembic import command  # type: ignore[attr-defined]
         from alembic.config import Config
 
         alembic_cfg = Config("alembic.ini")

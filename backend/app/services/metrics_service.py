@@ -91,7 +91,7 @@ def _calc_container_cpu(stats: dict[str, Any]) -> float:
             stats["cpu_stats"]["cpu_usage"].get("percpu_usage", [1])
         )
         if system_delta > 0 and cpu_delta >= 0:
-            return round((cpu_delta / system_delta) * num_cpus * 100.0, 2)
+            return float(round((cpu_delta / system_delta) * num_cpus * 100.0, 2))
     except (KeyError, ZeroDivisionError, TypeError):
         pass
     return 0.0

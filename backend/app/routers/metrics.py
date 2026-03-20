@@ -61,8 +61,8 @@ async def _get_alert_config(db: AsyncSession) -> dict[str, Any]:
     if setting is None or not setting.value:
         return DEFAULT_ALERT_CONFIG.copy()
     try:
-        return json.loads(setting.value)
-    except json.JSONDecodeError:
+        return dict(json.loads(str(setting.value)))
+    except (json.JSONDecodeError, ValueError, TypeError):
         return DEFAULT_ALERT_CONFIG.copy()
 
 
