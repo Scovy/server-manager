@@ -4,6 +4,8 @@ export interface DockerVolume {
   mountpoint: string;
   scope: string;
   labels: Record<string, string>;
+  ref_count: number;
+  in_use: boolean;
 }
 
 export interface DockerNetwork {
@@ -13,4 +15,5 @@ export interface DockerNetwork {
   scope: string;
   containers: number;
   labels: Record<string, string>;
+  protected: boolean;
 }

@@ -49,7 +49,7 @@ export default function ExecTerminal({ containerId }: ExecTerminalProps) {
     };
 
     ws.onclose = () => {
-      term.writeln('\r\n[session closed]');
+      term.writeln('\r\n[session closed] shell exited or container is not running');
     };
 
     const disposable = term.onData((data: string) => {

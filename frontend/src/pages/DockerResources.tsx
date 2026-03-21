@@ -95,8 +95,13 @@ export default function DockerResources() {
                     <td>{volume.driver}</td>
                     <td>{volume.scope}</td>
                     <td>
-                      <button className="btn btn-danger" onClick={() => void onDeleteVolume(volume.name)}>
-                        Delete
+                      <button
+                        className="btn btn-danger"
+                        onClick={() => void onDeleteVolume(volume.name)}
+                        disabled={volume.in_use}
+                        title={volume.in_use ? 'Volume is in use' : 'Delete volume'}
+                      >
+                        {volume.in_use ? 'In Use' : 'Delete'}
                       </button>
                     </td>
                   </tr>
@@ -129,8 +134,16 @@ export default function DockerResources() {
                       <button
                         className="btn btn-danger"
                         onClick={() => void onDeleteNetwork(network.id, network.name)}
+                        disabled={network.protected || network.containers > 0}
+                        title={
+                          network.protected
+                            ? 'Protected Docker network'
+                            : network.containers > 0
+                              ? 'Network has attached containers'
+                              : 'Delete network'
+                        }
                       >
-                        Delete
+                        {network.protected ? 'Protected' : network.containers > 0 ? 'In Use' : 'Delete'}
                       </button>
                     </td>
                   </tr>

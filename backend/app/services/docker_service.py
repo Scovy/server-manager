@@ -18,6 +18,8 @@ from docker.errors import APIError, NotFound
 class DockerService:
     """Service wrapper around Docker SDK operations used by container APIs."""
 
+    PROTECTED_NETWORKS = {"bridge", "host", "none"}
+
     def __init__(self) -> None:
         self.client = docker.from_env()
 
@@ -184,14 +186,36 @@ class DockerService:
     def open_exec_socket(self, container_id: str, command: str = "/bin/sh") -> Any:
         """Create an interactive exec session socket (tty, stdin enabled)."""
         container = self._get_container_or_raise(container_id)
+        if container.status != "running":
+            raise ValueError("Container must be running to open exec terminal")
+
         low_level = self.client.api
-        exec_config = low_level.exec_create(
-            container=container.id,
-            cmd=command,
-            stdin=True,
-            tty=True,
-        )
-        return low_level.exec_start(exec_config["Id"], tty=True, stream=False, socket=True)
+        candidates = [command, "/bin/bash", "/bin/sh", "sh", "ash"]
+        unique_candidates = [c for i, c in enumerate(candidates) if c and c not in candidates[:i]]
+
+        last_error: APIError | None = None
+        for cmd_candidate in unique_candidates:
+            try:
+                exec_config = low_level.exec_create(
+                    container=container.id,
+                    cmd=cmd_candidate,
+                    stdin=True,
+                    tty=True,
+                )
+                return low_level.exec_start(
+                    exec_config["Id"],
+                    tty=True,
+                    stream=False,
+                    socket=True,
+                )
+            except APIError as exc:
+                last_error = exc
+
+        if last_error:
+            raise ValueError(
+                f"Failed to start exec shell: {last_error.explanation}"
+            ) from last_error
+        raise ValueError("Failed to start exec shell")
 
     def list_volumes(self) -> list[dict[str, Any]]:
         """List docker volumes with useful metadata for the UI."""
@@ -203,6 +227,8 @@ class DockerService:
                 "mountpoint": volume.attrs.get("Mountpoint", ""),
                 "scope": volume.attrs.get("Scope", ""),
                 "labels": volume.attrs.get("Labels") or {},
+                "ref_count": int((volume.attrs.get("UsageData") or {}).get("RefCount", 0)),
+                "in_use": int((volume.attrs.get("UsageData") or {}).get("RefCount", 0)) > 0,
             }
             for volume in volumes
         ]
@@ -211,6 +237,9 @@ class DockerService:
         """Remove a docker volume by name."""
         try:
             volume = self.client.volumes.get(volume_name)
+            ref_count = int((volume.attrs.get("UsageData") or {}).get("RefCount", 0))
+            if ref_count > 0:
+                raise ValueError("Volume is in use and cannot be removed")
             volume.remove(force=False)
         except NotFound as exc:
             raise ValueError("Volume not found") from exc
@@ -220,22 +249,33 @@ class DockerService:
     def list_networks(self) -> list[dict[str, Any]]:
         """List docker networks with useful metadata for the UI."""
         networks = self.client.networks.list()
-        return [
-            {
-                "id": network.id[:12],
-                "name": network.name,
-                "driver": network.attrs.get("Driver", ""),
-                "scope": network.attrs.get("Scope", ""),
-                "containers": len((network.attrs.get("Containers") or {}).keys()),
-                "labels": network.attrs.get("Labels") or {},
-            }
-            for network in networks
-        ]
+        payload: list[dict[str, Any]] = []
+        for network in networks:
+            name = network.name
+            attached = len((network.attrs.get("Containers") or {}).keys())
+            is_protected = name in self.PROTECTED_NETWORKS
+            payload.append(
+                {
+                    "id": network.id[:12],
+                    "name": name,
+                    "driver": network.attrs.get("Driver", ""),
+                    "scope": network.attrs.get("Scope", ""),
+                    "containers": attached,
+                    "labels": network.attrs.get("Labels") or {},
+                    "protected": is_protected,
+                }
+            )
+        return payload
 
     def remove_network(self, network_id: str) -> None:
         """Remove a docker network by id or name."""
         try:
             network = self.client.networks.get(network_id)
+            if network.name in self.PROTECTED_NETWORKS:
+                raise ValueError("Protected docker network cannot be removed")
+            attached = len((network.attrs.get("Containers") or {}).keys())
+            if attached > 0:
+                raise ValueError("Network has attached containers and cannot be removed")
             network.remove()
         except NotFound as exc:
             raise ValueError("Network not found") from exc
@@ -293,9 +333,17 @@ class DockerService:
                     return candidate
 
         if working_dir:
-            default_file = Path(working_dir) / "docker-compose.yml"
-            if default_file.exists():
-                return default_file
+            default_candidates = [
+                "docker-compose.yml",
+                "docker-compose.yaml",
+                "docker-compose.prod.yml",
+                "compose.yml",
+                "compose.yaml",
+            ]
+            for name in default_candidates:
+                candidate = Path(working_dir) / name
+                if candidate.exists():
+                    return candidate
 
         raise ValueError("Compose file not found for container. Ensure it is compose-managed.")
 
