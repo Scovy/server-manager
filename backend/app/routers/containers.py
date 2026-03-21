@@ -6,6 +6,7 @@ Provides lifecycle actions, stats, logs, and compose/env read-write endpoints.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 from typing import Any, NoReturn
 
@@ -255,40 +256,67 @@ async def ws_exec_container(
         return
 
     async def socket_read(max_bytes: int) -> bytes:
-        reader = getattr(socket, "read", None)
-        if callable(reader):
-            data = await asyncio.to_thread(reader, max_bytes)
-            if isinstance(data, str):
-                return data.encode("utf-8", errors="replace")
-            return b"" if data is None else bytes(data)
+        objects = [socket]
+        raw_socket = getattr(socket, "_sock", None)
+        if raw_socket is not None:
+            objects.append(raw_socket)
 
-        receiver = getattr(socket, "recv", None)
-        if callable(receiver):
-            data = await asyncio.to_thread(receiver, max_bytes)
-            if isinstance(data, str):
-                return data.encode("utf-8", errors="replace")
-            return b"" if data is None else bytes(data)
+        for obj in objects:
+            receiver = getattr(obj, "recv", None)
+            if callable(receiver):
+                data = await asyncio.to_thread(receiver, max_bytes)
+                if isinstance(data, str):
+                    return data.encode("utf-8", errors="replace")
+                return b"" if data is None else bytes(data)
+
+            reader = getattr(obj, "read", None)
+            if callable(reader):
+                try:
+                    data = await asyncio.to_thread(reader, max_bytes)
+                except (OSError, io.UnsupportedOperation):
+                    continue
+                if isinstance(data, str):
+                    return data.encode("utf-8", errors="replace")
+                return b"" if data is None else bytes(data)
 
         raise RuntimeError("Docker exec socket does not support read/recv")
 
     async def socket_write(data: bytes) -> None:
-        writer = getattr(socket, "write", None)
-        if callable(writer):
-            await asyncio.to_thread(writer, data)
-            flusher = getattr(socket, "flush", None)
-            if callable(flusher):
-                await asyncio.to_thread(flusher)
-            return
+        objects = [socket]
+        raw_socket = getattr(socket, "_sock", None)
+        if raw_socket is not None:
+            objects.append(raw_socket)
 
-        sender_all = getattr(socket, "sendall", None)
-        if callable(sender_all):
-            await asyncio.to_thread(sender_all, data)
-            return
+        for obj in objects:
+            sender_all = getattr(obj, "sendall", None)
+            if callable(sender_all):
+                try:
+                    await asyncio.to_thread(sender_all, data)
+                    return
+                except (OSError, io.UnsupportedOperation):
+                    pass
 
-        sender = getattr(socket, "send", None)
-        if callable(sender):
-            await asyncio.to_thread(sender, data)
-            return
+            sender = getattr(obj, "send", None)
+            if callable(sender):
+                try:
+                    await asyncio.to_thread(sender, data)
+                    return
+                except (OSError, io.UnsupportedOperation):
+                    pass
+
+            writer = getattr(obj, "write", None)
+            if callable(writer):
+                try:
+                    await asyncio.to_thread(writer, data)
+                except (OSError, io.UnsupportedOperation):
+                    continue
+                flusher = getattr(obj, "flush", None)
+                if callable(flusher):
+                    try:
+                        await asyncio.to_thread(flusher)
+                    except (OSError, io.UnsupportedOperation):
+                        pass
+                return
 
         raise RuntimeError("Docker exec socket does not support write/send")
 
