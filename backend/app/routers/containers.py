@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, NoReturn
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -18,7 +18,7 @@ from app.services.docker_service import DockerService, env_to_text, parse_env_pa
 router = APIRouter(prefix="/api/containers", tags=["containers"])
 
 
-def _handle_service_error(exc: ValueError) -> None:
+def _handle_service_error(exc: ValueError) -> NoReturn:
     message = str(exc)
     status = 404 if "not found" in message.lower() else 400
     raise HTTPException(status_code=status, detail=message)
