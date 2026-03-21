@@ -139,13 +139,13 @@ async def stream_logs(
                     if isinstance(chunk, (bytes, bytearray))
                     else str(chunk)
                 )
-                yield f"data: {json.dumps({'logs': text})}\\n\\n"
+                yield f"data: {json.dumps({'logs': text})}\n\n"
         except ValueError as exc:
             err = {"logs": "", "error": str(exc)}
-            yield f"data: {json.dumps(err)}\\n\\n"
+            yield f"data: {json.dumps(err)}\n\n"
         except Exception as exc:
             err = {"logs": "", "error": f"Docker unavailable: {exc}"}
-            yield f"data: {json.dumps(err)}\\n\\n"
+            yield f"data: {json.dumps(err)}\n\n"
         finally:
             service.close()
 

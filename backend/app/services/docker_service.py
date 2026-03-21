@@ -233,6 +233,7 @@ class DockerService:
                     cmd=cmd_candidate,
                     stdin=True,
                     tty=True,
+                    workdir="/",
                 )
                 return low_level.exec_start(
                     exec_config["Id"],
@@ -262,6 +263,7 @@ class DockerService:
                 cmd=command,
                 stdin=True,
                 tty=True,
+                workdir="/",
             )
             return low_level.exec_start(
                 exec_config["Id"],
