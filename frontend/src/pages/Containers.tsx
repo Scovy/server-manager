@@ -126,7 +126,13 @@ export default function Containers() {
         }
 
         if (typeof payload.logs === 'string') {
-          setLogs(payload.logs.length > 0 ? payload.logs : '[no logs yet]');
+          setLogs((prev) => {
+            if (payload.logs.length === 0) {
+              return prev.length > 0 ? prev : '[no logs yet]';
+            }
+            const next = prev + payload.logs;
+            return next.slice(-12000);
+          });
         }
       } catch {
         // Ignore malformed SSE payloads.

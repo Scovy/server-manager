@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncGenerator
 from typing import Any, NoReturn
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -126,36 +125,34 @@ def get_container_stats(container_id: str) -> dict[str, Any]:
 async def stream_logs(
     container_id: str,
     tail: int = Query(200, ge=1, le=2000),
-    poll_seconds: float = Query(2.0, ge=0.5, le=10.0),
 ) -> StreamingResponse:
-    """SSE-style log stream by polling Docker logs and sending deltas."""
+    """SSE log stream using Docker's native follow mode."""
 
-    async def event_stream() -> AsyncGenerator[str, None]:
-        last_payload = ""
-        first_tick = True
-        while True:
-            service = DockerService()
-            try:
-                payload = await asyncio.to_thread(service.tail_logs, container_id, tail)
-            except ValueError as exc:
-                err = {"logs": "", "error": str(exc)}
-                yield f"data: {json.dumps(err)}\\n\\n"
-                break
-            except Exception as exc:
-                err = {"logs": "", "error": f"Docker unavailable: {exc}"}
-                yield f"data: {json.dumps(err)}\\n\\n"
-                break
-            finally:
-                service.close()
+    def stream_generator() -> Any:
+        service = DockerService()
+        try:
+            iterator = service.stream_logs_follow(container_id, tail)
+            for chunk in iterator:
+                text = (
+                    chunk.decode("utf-8", errors="replace")
+                    if isinstance(chunk, (bytes, bytearray))
+                    else str(chunk)
+                )
+                yield f"data: {json.dumps({'logs': text})}\\n\\n"
+        except ValueError as exc:
+            err = {"logs": "", "error": str(exc)}
+            yield f"data: {json.dumps(err)}\\n\\n"
+        except Exception as exc:
+            err = {"logs": "", "error": f"Docker unavailable: {exc}"}
+            yield f"data: {json.dumps(err)}\\n\\n"
+        finally:
+            service.close()
 
-            if first_tick or payload != last_payload:
-                last_payload = payload
-                yield f"data: {json.dumps({'logs': payload})}\\n\\n"
-                first_tick = False
-
-            await asyncio.sleep(poll_seconds)
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        stream_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/{container_id}/compose")
@@ -241,6 +238,11 @@ async def ws_exec_container(
 
     try:
         exec_cmd = await asyncio.to_thread(service.resolve_exec_command, container_id, cmd)
+        socket = await asyncio.to_thread(
+            service.open_exec_socket_with_command,
+            container_id,
+            exec_cmd,
+        )
     except ValueError as exc:
         await websocket.send_text(f"ERROR: {exc}")
         await websocket.close(code=1011)
@@ -252,41 +254,32 @@ async def ws_exec_container(
         service.close()
         return
 
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "docker",
-            "exec",
-            "-i",
-            container_id,
-            *exec_cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-    except Exception as exc:
-        await websocket.send_text(f"ERROR: Failed to start docker exec: {exc}")
-        await websocket.close(code=1011)
-        service.close()
-        return
-
     async def pipe_container_output() -> None:
-        assert proc.stdout is not None
         while True:
-            chunk = await proc.stdout.read(2048)
-            if not chunk:
-                break
-            text = chunk.decode("utf-8", errors="replace")
+            chunk = await asyncio.to_thread(socket.recv, 4096)
+            if chunk is None:
+                await asyncio.sleep(0.05)
+                continue
+            if isinstance(chunk, (bytes, bytearray)) and len(chunk) == 0:
+                await asyncio.sleep(0.05)
+                continue
+            text = (
+                chunk.decode("utf-8", errors="replace")
+                if isinstance(chunk, (bytes, bytearray))
+                else str(chunk)
+            )
             await websocket.send_text(text)
-        await websocket.close(code=1000)
 
     output_task = asyncio.create_task(pipe_container_output())
 
     try:
-        assert proc.stdin is not None
         while True:
             data = await websocket.receive_text()
-            proc.stdin.write(data.encode("utf-8"))
-            await proc.stdin.drain()
+            sender = getattr(socket, "sendall", None)
+            if callable(sender):
+                await asyncio.to_thread(sender, data.encode("utf-8"))
+            else:
+                await asyncio.to_thread(socket.send, data.encode("utf-8"))
     except WebSocketDisconnect:
         pass
     finally:
@@ -296,12 +289,7 @@ async def ws_exec_container(
         except asyncio.CancelledError:
             pass
 
-        if proc.stdin is not None and not proc.stdin.is_closing():
-            proc.stdin.close()
-        if proc.returncode is None:
-            proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=1.0)
-            except asyncio.TimeoutError:
-                proc.kill()
+        close_candidate = getattr(socket, "close", None)
+        if callable(close_candidate):
+            await asyncio.to_thread(close_candidate)
         service.close()

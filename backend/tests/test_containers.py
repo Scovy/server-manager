@@ -141,9 +141,9 @@ async def test_apply_changes_failure(client: AsyncClient):
 async def test_logs_stream_error_event_on_missing_container(client: AsyncClient):
     with patch("app.routers.containers.DockerService") as mock_service_cls:
         service = mock_service_cls.return_value
-        service.tail_logs.side_effect = ValueError("Container not found")
+        service.stream_logs_follow.side_effect = ValueError("Container not found")
 
-        res = await client.get("/api/containers/missing/logs?tail=10&poll_seconds=0.5")
+        res = await client.get("/api/containers/missing/logs?tail=10")
 
     assert res.status_code == 200
     assert "data:" in res.text

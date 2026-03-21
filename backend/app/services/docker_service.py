@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import docker
 from docker.errors import APIError, NotFound
@@ -85,6 +86,17 @@ class DockerService:
         if isinstance(raw, bytes):
             return raw.decode("utf-8", errors="replace")
         return str(raw)
+
+    def stream_logs_follow(self, container_id: str, tail: int = 200) -> Iterator[bytes]:
+        """Yield live container logs as raw bytes from Docker follow stream."""
+        container = self._get_container_or_raise(container_id)
+        raw = container.logs(
+            stream=True,
+            follow=True,
+            tail=tail,
+            timestamps=True,
+        )
+        return cast(Iterator[bytes], raw)
 
     def get_compose(self, container_id: str) -> tuple[str, str]:
         """Read docker-compose file for a compose-managed container.
@@ -236,6 +248,29 @@ class DockerService:
                 f"Failed to start exec shell: {last_error.explanation}"
             ) from last_error
         raise ValueError("Failed to start exec shell")
+
+    def open_exec_socket_with_command(self, container_id: str, command: list[str]) -> Any:
+        """Open an exec socket using a pre-resolved command list."""
+        container = self._get_container_or_raise(container_id)
+        if container.status != "running":
+            raise ValueError("Container must be running to open exec terminal")
+
+        low_level = self.client.api
+        try:
+            exec_config = low_level.exec_create(
+                container=container.id,
+                cmd=command,
+                stdin=True,
+                tty=True,
+            )
+            return low_level.exec_start(
+                exec_config["Id"],
+                tty=True,
+                stream=False,
+                socket=True,
+            )
+        except APIError as exc:
+            raise ValueError(f"Failed to open exec socket: {exc.explanation}") from exc
 
     def resolve_exec_command(self, container_id: str, command: str = "/bin/sh") -> list[str]:
         """Resolve a working interactive shell command for docker exec."""
