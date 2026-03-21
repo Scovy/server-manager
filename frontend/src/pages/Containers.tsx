@@ -126,11 +126,12 @@ export default function Containers() {
         }
 
         if (typeof payload.logs === 'string') {
+          const logChunk = payload.logs;
           setLogs((prev) => {
-            if (payload.logs.length === 0) {
+            if (logChunk.length === 0) {
               return prev.length > 0 ? prev : '[no logs yet]';
             }
-            const next = prev + payload.logs;
+            const next = prev + logChunk;
             return next.slice(-12000);
           });
         }
