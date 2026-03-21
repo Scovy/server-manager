@@ -252,9 +252,12 @@ async def ws_exec_container(
     async def pipe_container_output() -> None:
         while True:
             chunk = await asyncio.to_thread(socket.recv, 4096)
-            if not chunk:
-                await websocket.close(code=1000)
-                return
+            if chunk is None:
+                await asyncio.sleep(0.05)
+                continue
+            if isinstance(chunk, (bytes, bytearray)) and len(chunk) == 0:
+                await asyncio.sleep(0.05)
+                continue
             text = (
                 chunk.decode("utf-8", errors="replace")
                 if isinstance(chunk, (bytes, bytearray))

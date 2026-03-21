@@ -190,8 +190,28 @@ class DockerService:
             raise ValueError("Container must be running to open exec terminal")
 
         low_level = self.client.api
-        candidates = [command, "/bin/bash", "/bin/sh", "sh", "ash"]
-        unique_candidates = [c for i, c in enumerate(candidates) if c and c not in candidates[:i]]
+        candidates: list[str | list[str]] = [
+            command,
+            ["/bin/bash", "-i"],
+            ["/bin/sh", "-i"],
+            ["bash", "-i"],
+            ["sh", "-i"],
+            ["ash", "-i"],
+            "/bin/bash",
+            "/bin/sh",
+            "bash",
+            "sh",
+            "ash",
+        ]
+
+        unique_candidates: list[str | list[str]] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_candidates.append(candidate)
 
         last_error: APIError | None = None
         for cmd_candidate in unique_candidates:
