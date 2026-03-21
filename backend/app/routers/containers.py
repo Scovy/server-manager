@@ -25,7 +25,9 @@ def _handle_service_error(exc: ValueError) -> None:
 
 
 @router.get("")
-def list_containers(all: bool = Query(True, description="Include stopped containers")) -> list[dict[str, Any]]:
+def list_containers(
+    all: bool = Query(True, description="Include stopped containers"),
+) -> list[dict[str, Any]]:
     service = DockerService()
     try:
         return service.list_containers(all_containers=all)
@@ -138,7 +140,8 @@ async def stream_logs(
                 yield f"event: error\\ndata: {json.dumps({'detail': str(exc)})}\\n\\n"
                 break
             except Exception as exc:
-                yield f"event: error\\ndata: {json.dumps({'detail': f'Docker unavailable: {exc}'})}\\n\\n"
+                error_payload = {"detail": f"Docker unavailable: {exc}"}
+                yield f"event: error\\ndata: {json.dumps(error_payload)}\\n\\n"
                 break
             finally:
                 service.close()
@@ -178,7 +181,10 @@ def update_compose(container_id: str, payload: dict[str, str]) -> dict[str, str]
 
 
 @router.get("/{container_id}/env")
-def get_env(container_id: str, format: str = Query("map", pattern="^(map|text)$")) -> dict[str, Any]:
+def get_env(
+    container_id: str,
+    format: str = Query("map", pattern="^(map|text)$"),
+) -> dict[str, Any]:
     service = DockerService()
     try:
         data = service.get_env(container_id)
