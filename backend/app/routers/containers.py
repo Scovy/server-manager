@@ -254,15 +254,49 @@ async def ws_exec_container(
         service.close()
         return
 
+    async def socket_read(max_bytes: int) -> bytes:
+        reader = getattr(socket, "read", None)
+        if callable(reader):
+            data = await asyncio.to_thread(reader, max_bytes)
+            if isinstance(data, str):
+                return data.encode("utf-8", errors="replace")
+            return b"" if data is None else bytes(data)
+
+        receiver = getattr(socket, "recv", None)
+        if callable(receiver):
+            data = await asyncio.to_thread(receiver, max_bytes)
+            if isinstance(data, str):
+                return data.encode("utf-8", errors="replace")
+            return b"" if data is None else bytes(data)
+
+        raise RuntimeError("Docker exec socket does not support read/recv")
+
+    async def socket_write(data: bytes) -> None:
+        writer = getattr(socket, "write", None)
+        if callable(writer):
+            await asyncio.to_thread(writer, data)
+            flusher = getattr(socket, "flush", None)
+            if callable(flusher):
+                await asyncio.to_thread(flusher)
+            return
+
+        sender_all = getattr(socket, "sendall", None)
+        if callable(sender_all):
+            await asyncio.to_thread(sender_all, data)
+            return
+
+        sender = getattr(socket, "send", None)
+        if callable(sender):
+            await asyncio.to_thread(sender, data)
+            return
+
+        raise RuntimeError("Docker exec socket does not support write/send")
+
     async def pipe_container_output() -> None:
         while True:
-            chunk = await asyncio.to_thread(socket.recv, 4096)
-            if chunk is None:
-                await asyncio.sleep(0.05)
-                continue
-            if isinstance(chunk, (bytes, bytearray)) and len(chunk) == 0:
-                await asyncio.sleep(0.05)
-                continue
+            chunk = await socket_read(4096)
+            if not chunk:
+                break
             text = (
                 chunk.decode("utf-8", errors="replace")
                 if isinstance(chunk, (bytes, bytearray))
@@ -275,11 +309,7 @@ async def ws_exec_container(
     try:
         while True:
             data = await websocket.receive_text()
-            sender = getattr(socket, "sendall", None)
-            if callable(sender):
-                await asyncio.to_thread(sender, data.encode("utf-8"))
-            else:
-                await asyncio.to_thread(socket.send, data.encode("utf-8"))
+            await socket_write(data.encode("utf-8"))
     except WebSocketDisconnect:
         pass
     finally:
