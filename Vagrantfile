@@ -14,7 +14,21 @@ Vagrant.configure("2") do |config|
   
   # Use rsync to sync folders when running from WSL to Windows VirtualBox
   config.vm.synced_folder ".", "/vagrant", type: "rsync",
-    rsync__exclude: [".git/", "frontend/node_modules/", "backend/venv/", "backend/.venv/"]
+    rsync__args: ["--verbose", "--archive", "--delete", "-z", "--copy-links"],
+    rsync__exclude: [
+      ".vagrant/",
+      ".git/",
+      ".venv/",
+      "backend/venv/",
+      "backend/.venv/",
+      "backend/__pycache__/",
+      "backend/alembic/__pycache__/",
+      "frontend/node_modules/",
+      "frontend/dist/",
+      ".pytest_cache/",
+      ".mypy_cache/",
+      ".ruff_cache/"
+    ]
 
   # Assign a static IP so you always know where your dashboard is
   config.vm.network "private_network", ip: "192.168.56.10"
