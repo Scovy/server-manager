@@ -17,6 +17,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import MainLayout from './layouts/MainLayout';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
+import Containers from './pages/Containers';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -57,7 +58,7 @@ export default function App() {
           {/* App routes — with sidebar layout */}
           <Route element={<MainLayout />}>
             <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/containers" element={<ComingSoon title="Containers" />} />
+            <Route path="/containers" element={<Containers />} />
             <Route path="/marketplace" element={<ComingSoon title="Marketplace" />} />
             <Route path="/domains" element={<ComingSoon title="Domains & SSL" />} />
             <Route path="/backup" element={<ComingSoon title="Backup & Restore" />} />
