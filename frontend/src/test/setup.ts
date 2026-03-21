@@ -9,7 +9,7 @@
  */
 import '@testing-library/jest-dom';
 
-global.ResizeObserver = class {
+globalThis.ResizeObserver = class {
   observe() {}
   unobserve() {}
   disconnect() {}
