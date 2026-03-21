@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     DOMAIN: str = "localhost"
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:3000"
 
+    # Metrics
+    METRICS_WS_INTERVAL_SECONDS: float = 1.0
+
     @property
     def cors_origins_list(self) -> list[str]:
         """Parse comma-separated CORS origins into a list."""

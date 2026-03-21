@@ -1,7 +1,7 @@
 """Metrics router — WebSocket stream, historical data, and alert configuration.
 
 Endpoints:
-    GET  /ws/metrics              WebSocket broadcasting live MetricsSnapshot every 2 s
+    GET  /ws/metrics              WebSocket broadcasting live MetricsSnapshot every 1 s
     GET  /api/metrics/history     Historical data with optional time-range and interval filters
     GET  /api/metrics/alerts      Current alert threshold configuration
     PUT  /api/metrics/alerts      Update alert thresholds and optional webhook URL
@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_db
 from app.models.metrics_history import MetricsHistory
 from app.models.setting import Setting
@@ -28,7 +29,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["metrics"])
 
 # Seconds between WebSocket metric pushes
-WS_INTERVAL = 2.0
+WS_INTERVAL = settings.METRICS_WS_INTERVAL_SECONDS
 
 # Settings key for alert configuration
 ALERT_CONFIG_KEY = "alert_config"
@@ -110,7 +111,7 @@ async def _maybe_send_alert(snapshot: MetricsSnapshot, config: dict[str, Any]) -
 
 @router.websocket("/ws/metrics")
 async def ws_metrics(websocket: WebSocket, db: AsyncSession = Depends(get_db)) -> None:
-    """WebSocket endpoint that pushes live system metrics every 2 seconds.
+    """WebSocket endpoint that pushes live system metrics on each interval tick.
 
     Sends a JSON object matching the ``MetricsSnapshot`` schema on each tick.
     Clients should reconnect with exponential backoff on disconnect.
