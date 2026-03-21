@@ -211,19 +211,20 @@ class DockerService:
     def _calc_container_cpu(stats: dict[str, Any]) -> float:
         """Calculate CPU percentage using Docker stats delta values."""
         try:
-            cpu_delta = (
+            cpu_delta = float(
                 stats["cpu_stats"]["cpu_usage"]["total_usage"]
                 - stats["precpu_stats"]["cpu_usage"]["total_usage"]
             )
-            system_delta = (
+            system_delta = float(
                 stats["cpu_stats"]["system_cpu_usage"]
                 - stats["precpu_stats"]["system_cpu_usage"]
             )
-            cpus = stats["cpu_stats"].get("online_cpus") or len(
+            cpus_raw = stats["cpu_stats"].get("online_cpus") or len(
                 stats["cpu_stats"]["cpu_usage"].get("percpu_usage", [1])
             )
+            cpus = float(cpus_raw)
             if system_delta > 0 and cpu_delta >= 0:
-                return round((cpu_delta / system_delta) * cpus * 100.0, 2)
+                return float(round((cpu_delta / system_delta) * cpus * 100.0, 2))
         except (KeyError, ZeroDivisionError, TypeError):
             return 0.0
         return 0.0
