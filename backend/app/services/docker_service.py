@@ -237,6 +237,40 @@ class DockerService:
             ) from last_error
         raise ValueError("Failed to start exec shell")
 
+    def resolve_exec_command(self, container_id: str, command: str = "/bin/sh") -> list[str]:
+        """Resolve a working interactive shell command for docker exec."""
+        container = self._get_container_or_raise(container_id)
+        if container.status != "running":
+            raise ValueError("Container must be running to open exec terminal")
+
+        candidates = [
+            command,
+            "/bin/bash",
+            "/bin/sh",
+            "bash",
+            "sh",
+            "ash",
+        ]
+        unique_candidates = [c for i, c in enumerate(candidates) if c and c not in candidates[:i]]
+
+        for shell in unique_candidates:
+            try:
+                probe = container.exec_run(
+                    cmd=[shell, "-c", "printf __ok__"],
+                    stdout=True,
+                    stderr=True,
+                )
+                if isinstance(probe, tuple):
+                    exit_code = int(probe[0])
+                else:
+                    exit_code = int(getattr(probe, "exit_code", 1))
+                if exit_code == 0:
+                    return [shell, "-i"]
+            except APIError:
+                continue
+
+        raise ValueError("No supported shell found in container image")
+
     def list_volumes(self) -> list[dict[str, Any]]:
         """List docker volumes with useful metadata for the UI."""
         volumes = self.client.volumes.list()

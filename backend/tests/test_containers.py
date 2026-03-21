@@ -146,14 +146,14 @@ async def test_logs_stream_error_event_on_missing_container(client: AsyncClient)
         res = await client.get("/api/containers/missing/logs?tail=10&poll_seconds=0.5")
 
     assert res.status_code == 200
-    assert "event: error" in res.text
+    assert "data:" in res.text
     assert "Container not found" in res.text
 
 
 def test_exec_websocket_returns_error_when_container_missing():
     with patch("app.routers.containers.DockerService") as mock_service_cls:
         service = mock_service_cls.return_value
-        service.open_exec_socket.side_effect = ValueError("Container not found")
+        service.resolve_exec_command.side_effect = ValueError("Container not found")
 
         with TestClient(app) as sync_client:
             with sync_client.websocket_connect("/api/containers/missing/exec") as ws:

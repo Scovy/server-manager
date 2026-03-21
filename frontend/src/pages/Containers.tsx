@@ -117,9 +117,16 @@ export default function Containers() {
     const source = new EventSource(`/api/containers/${selectedId}/logs?tail=200`);
     source.onmessage = (event) => {
       try {
-        const payload = JSON.parse(event.data) as { logs?: string };
-        if (!cancelled && typeof payload.logs === 'string') {
-          setLogs(payload.logs);
+        const payload = JSON.parse(event.data) as { logs?: string; error?: string };
+        if (cancelled) return;
+
+        if (typeof payload.error === 'string' && payload.error.length > 0) {
+          setError(payload.error);
+          return;
+        }
+
+        if (typeof payload.logs === 'string') {
+          setLogs(payload.logs.length > 0 ? payload.logs : '[no logs yet]');
         }
       } catch {
         // Ignore malformed SSE payloads.

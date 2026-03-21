@@ -132,23 +132,26 @@ async def stream_logs(
 
     async def event_stream() -> AsyncGenerator[str, None]:
         last_payload = ""
+        first_tick = True
         while True:
             service = DockerService()
             try:
                 payload = await asyncio.to_thread(service.tail_logs, container_id, tail)
             except ValueError as exc:
-                yield f"event: error\\ndata: {json.dumps({'detail': str(exc)})}\\n\\n"
+                err = {"logs": "", "error": str(exc)}
+                yield f"data: {json.dumps(err)}\\n\\n"
                 break
             except Exception as exc:
-                error_payload = {"detail": f"Docker unavailable: {exc}"}
-                yield f"event: error\\ndata: {json.dumps(error_payload)}\\n\\n"
+                err = {"logs": "", "error": f"Docker unavailable: {exc}"}
+                yield f"data: {json.dumps(err)}\\n\\n"
                 break
             finally:
                 service.close()
 
-            if payload != last_payload:
+            if first_tick or payload != last_payload:
                 last_payload = payload
                 yield f"data: {json.dumps({'logs': payload})}\\n\\n"
+                first_tick = False
 
             await asyncio.sleep(poll_seconds)
 
@@ -237,7 +240,7 @@ async def ws_exec_container(
     service = DockerService()
 
     try:
-        socket = await asyncio.to_thread(service.open_exec_socket, container_id, cmd)
+        exec_cmd = await asyncio.to_thread(service.resolve_exec_command, container_id, cmd)
     except ValueError as exc:
         await websocket.send_text(f"ERROR: {exc}")
         await websocket.close(code=1011)
@@ -249,28 +252,41 @@ async def ws_exec_container(
         service.close()
         return
 
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "exec",
+            "-i",
+            container_id,
+            *exec_cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+    except Exception as exc:
+        await websocket.send_text(f"ERROR: Failed to start docker exec: {exc}")
+        await websocket.close(code=1011)
+        service.close()
+        return
+
     async def pipe_container_output() -> None:
+        assert proc.stdout is not None
         while True:
-            chunk = await asyncio.to_thread(socket.recv, 4096)
-            if chunk is None:
-                await asyncio.sleep(0.05)
-                continue
-            if isinstance(chunk, (bytes, bytearray)) and len(chunk) == 0:
-                await asyncio.sleep(0.05)
-                continue
-            text = (
-                chunk.decode("utf-8", errors="replace")
-                if isinstance(chunk, (bytes, bytearray))
-                else str(chunk)
-            )
+            chunk = await proc.stdout.read(2048)
+            if not chunk:
+                break
+            text = chunk.decode("utf-8", errors="replace")
             await websocket.send_text(text)
+        await websocket.close(code=1000)
 
     output_task = asyncio.create_task(pipe_container_output())
 
     try:
+        assert proc.stdin is not None
         while True:
             data = await websocket.receive_text()
-            await asyncio.to_thread(socket.send, data.encode("utf-8"))
+            proc.stdin.write(data.encode("utf-8"))
+            await proc.stdin.drain()
     except WebSocketDisconnect:
         pass
     finally:
@@ -280,7 +296,12 @@ async def ws_exec_container(
         except asyncio.CancelledError:
             pass
 
-        close_candidate = getattr(socket, "close", None)
-        if callable(close_candidate):
-            await asyncio.to_thread(close_candidate)
+        if proc.stdin is not None and not proc.stdin.is_closing():
+            proc.stdin.close()
+        if proc.returncode is None:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=1.0)
+            except asyncio.TimeoutError:
+                proc.kill()
         service.close()
