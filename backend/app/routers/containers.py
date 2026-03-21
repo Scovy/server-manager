@@ -10,7 +10,7 @@ import json
 from collections.abc import AsyncGenerator
 from typing import Any, NoReturn
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
 from app.services.docker_service import DockerService, env_to_text, parse_env_payload
@@ -180,6 +180,18 @@ def update_compose(container_id: str, payload: dict[str, str]) -> dict[str, str]
         service.close()
 
 
+@router.post("/{container_id}/apply")
+def apply_compose_changes(container_id: str) -> dict[str, str]:
+    """Apply compose/env edits by recreating compose services."""
+    service = DockerService()
+    try:
+        return service.apply_compose(container_id)
+    except ValueError as exc:
+        _handle_service_error(exc)
+    finally:
+        service.close()
+
+
 @router.get("/{container_id}/env")
 def get_env(
     container_id: str,
@@ -211,4 +223,61 @@ def update_env(container_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     except ValueError as exc:
         _handle_service_error(exc)
     finally:
+        service.close()
+
+
+@router.websocket("/{container_id}/exec")
+async def ws_exec_container(
+    websocket: WebSocket,
+    container_id: str,
+    cmd: str = Query("/bin/sh"),
+) -> None:
+    """Interactive WebSocket terminal attached to a container exec session."""
+    await websocket.accept()
+    service = DockerService()
+
+    try:
+        socket = await asyncio.to_thread(service.open_exec_socket, container_id, cmd)
+    except ValueError as exc:
+        await websocket.send_text(f"ERROR: {exc}")
+        await websocket.close(code=1011)
+        service.close()
+        return
+    except Exception as exc:
+        await websocket.send_text(f"ERROR: Docker unavailable: {exc}")
+        await websocket.close(code=1011)
+        service.close()
+        return
+
+    async def pipe_container_output() -> None:
+        while True:
+            chunk = await asyncio.to_thread(socket.recv, 4096)
+            if not chunk:
+                await websocket.close(code=1000)
+                return
+            text = (
+                chunk.decode("utf-8", errors="replace")
+                if isinstance(chunk, (bytes, bytearray))
+                else str(chunk)
+            )
+            await websocket.send_text(text)
+
+    output_task = asyncio.create_task(pipe_container_output())
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            await asyncio.to_thread(socket.send, data.encode("utf-8"))
+    except WebSocketDisconnect:
+        pass
+    finally:
+        output_task.cancel()
+        try:
+            await output_task
+        except asyncio.CancelledError:
+            pass
+
+        close_candidate = getattr(socket, "close", None)
+        if callable(close_candidate):
+            await asyncio.to_thread(close_candidate)
         service.close()

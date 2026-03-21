@@ -3,7 +3,10 @@
 from unittest.mock import patch
 
 import pytest
+from fastapi.testclient import TestClient
 from httpx import AsyncClient
+
+from app.main import app
 
 
 @pytest.mark.asyncio
@@ -91,3 +94,69 @@ async def test_get_compose_returns_file_content(client: AsyncClient):
     payload = res.json()
     assert payload["path"] == "/tmp/docker-compose.yml"
     assert "services:" in payload["content"]
+
+
+@pytest.mark.asyncio
+async def test_update_compose_success(client: AsyncClient):
+    with patch("app.routers.containers.DockerService") as mock_service_cls:
+        service = mock_service_cls.return_value
+        service.update_compose.return_value = "/tmp/docker-compose.yml"
+
+        res = await client.put(
+            "/api/containers/abc123/compose",
+            json={"content": "services:\n  app:\n"},
+        )
+
+    assert res.status_code == 200
+    assert res.json()["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_apply_changes_success(client: AsyncClient):
+    with patch("app.routers.containers.DockerService") as mock_service_cls:
+        service = mock_service_cls.return_value
+        service.apply_compose.return_value = {
+            "status": "ok",
+            "output": "recreated",
+        }
+
+        res = await client.post("/api/containers/abc123/apply")
+
+    assert res.status_code == 200
+    assert res.json()["output"] == "recreated"
+
+
+@pytest.mark.asyncio
+async def test_apply_changes_failure(client: AsyncClient):
+    with patch("app.routers.containers.DockerService") as mock_service_cls:
+        service = mock_service_cls.return_value
+        service.apply_compose.side_effect = ValueError("Apply failed: bad compose")
+
+        res = await client.post("/api/containers/abc123/apply")
+
+    assert res.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_logs_stream_error_event_on_missing_container(client: AsyncClient):
+    with patch("app.routers.containers.DockerService") as mock_service_cls:
+        service = mock_service_cls.return_value
+        service.tail_logs.side_effect = ValueError("Container not found")
+
+        res = await client.get("/api/containers/missing/logs?tail=10&poll_seconds=0.5")
+
+    assert res.status_code == 200
+    assert "event: error" in res.text
+    assert "Container not found" in res.text
+
+
+def test_exec_websocket_returns_error_when_container_missing():
+    with patch("app.routers.containers.DockerService") as mock_service_cls:
+        service = mock_service_cls.return_value
+        service.open_exec_socket.side_effect = ValueError("Container not found")
+
+        with TestClient(app) as sync_client:
+            with sync_client.websocket_connect("/api/containers/missing/exec") as ws:
+                error_text = ws.receive_text()
+
+    assert "Container not found" in error_text

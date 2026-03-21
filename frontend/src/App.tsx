@@ -4,7 +4,8 @@
  * Sets up React Router with the following route structure:
  * - /login — Authentication page (no sidebar)
  * - /dashboard — Main dashboard with system metrics
- * - /containers — Docker container management (placeholder)
+ * - /containers — Docker container management
+ * - /docker-resources — Docker volumes and networks management
  * - /marketplace — App marketplace (placeholder)
  * - /domains — Domain and SSL management (placeholder)
  * - /backup — Backup & Restore (placeholder)
@@ -18,6 +19,7 @@ import MainLayout from './layouts/MainLayout';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Containers from './pages/Containers';
+import DockerResources from './pages/DockerResources';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -59,6 +61,7 @@ export default function App() {
           <Route element={<MainLayout />}>
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/containers" element={<Containers />} />
+            <Route path="/docker-resources" element={<DockerResources />} />
             <Route path="/marketplace" element={<ComingSoon title="Marketplace" />} />
             <Route path="/domains" element={<ComingSoon title="Domains & SSL" />} />
             <Route path="/backup" element={<ComingSoon title="Backup & Restore" />} />

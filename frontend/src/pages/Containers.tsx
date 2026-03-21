@@ -7,10 +7,12 @@ import {
   fetchEnvText,
   removeContainer,
   runContainerAction,
+  applyContainerChanges,
   updateCompose,
   updateEnvText,
 } from '../api/containersApi';
 import type { ContainerDetail, ContainerItem, ContainerStats } from '../types/containers';
+import ExecTerminal from '../components/ExecTerminal';
 import './Containers.css';
 
 type ContainerAction = 'start' | 'stop' | 'restart' | 'kill';
@@ -185,7 +187,7 @@ export default function Containers() {
     setError('');
     try {
       await updateCompose(selectedId, composeText);
-      setMessage('Compose file saved. Run restart to apply changes.');
+      setMessage('Compose file saved. Click Apply Changes to recreate services.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save compose file');
     }
@@ -197,9 +199,22 @@ export default function Containers() {
     setError('');
     try {
       await updateEnvText(selectedId, envText);
-      setMessage('.env file saved. Run restart to apply changes.');
+      setMessage('.env file saved. Click Apply Changes to recreate services.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save env file');
+    }
+  }
+
+  async function onApplyChanges() {
+    if (!selectedId) return;
+    setMessage('');
+    setError('');
+    try {
+      const output = await applyContainerChanges(selectedId);
+      setMessage(`Apply completed: ${output}`);
+      await loadContainers(selectedId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to apply compose changes');
     }
   }
 
@@ -289,6 +304,9 @@ export default function Containers() {
                 <button className="btn btn-secondary" onClick={() => void onAction('stop')}>Stop</button>
                 <button className="btn btn-secondary" onClick={() => void onAction('restart')}>Restart</button>
                 <button className="btn btn-secondary" onClick={() => void onAction('kill')}>Kill</button>
+                <button className="btn btn-secondary" onClick={() => void onApplyChanges()}>
+                  Apply Changes
+                </button>
                 <button className="btn btn-danger" onClick={() => void onRemove()}>Remove</button>
               </div>
 
@@ -321,6 +339,11 @@ export default function Containers() {
                 <button className="btn btn-secondary" onClick={() => void onSaveEnv()}>
                   Save .env
                 </button>
+              </div>
+
+              <div>
+                <h3>Exec Terminal</h3>
+                <ExecTerminal containerId={selectedId} />
               </div>
             </>
           )}

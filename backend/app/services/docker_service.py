@@ -7,6 +7,7 @@ reused by routers and unit-tested via mocking.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -138,6 +139,108 @@ class DockerService:
             return env
         except OSError as exc:
             raise ValueError(f"Failed to write env file: {exc}") from exc
+
+    def apply_compose(self, container_id: str) -> dict[str, str]:
+        """Apply compose/env changes by recreating the compose project.
+
+        Runs:
+            docker compose -f <compose_file> up -d --force-recreate
+        """
+        container = self._get_container_or_raise(container_id)
+        compose_path = self._resolve_compose_file(container)
+        working_dir = compose_path.parent
+
+        try:
+            proc = subprocess.run(
+                [
+                    "docker",
+                    "compose",
+                    "-f",
+                    str(compose_path),
+                    "up",
+                    "-d",
+                    "--force-recreate",
+                ],
+                cwd=str(working_dir),
+                capture_output=True,
+                text=True,
+                timeout=180,
+                check=False,
+            )
+        except OSError as exc:
+            raise ValueError(f"Failed to run docker compose: {exc}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise ValueError("docker compose apply timed out") from exc
+
+        if proc.returncode != 0:
+            stderr = proc.stderr.strip() or proc.stdout.strip() or "Unknown docker compose error"
+            raise ValueError(f"Apply failed: {stderr}")
+
+        return {
+            "status": "ok",
+            "output": proc.stdout.strip() or "Compose project recreated successfully",
+        }
+
+    def open_exec_socket(self, container_id: str, command: str = "/bin/sh") -> Any:
+        """Create an interactive exec session socket (tty, stdin enabled)."""
+        container = self._get_container_or_raise(container_id)
+        low_level = self.client.api
+        exec_config = low_level.exec_create(
+            container=container.id,
+            cmd=command,
+            stdin=True,
+            tty=True,
+        )
+        return low_level.exec_start(exec_config["Id"], tty=True, stream=False, socket=True)
+
+    def list_volumes(self) -> list[dict[str, Any]]:
+        """List docker volumes with useful metadata for the UI."""
+        volumes = self.client.volumes.list()
+        return [
+            {
+                "name": volume.name,
+                "driver": volume.attrs.get("Driver", ""),
+                "mountpoint": volume.attrs.get("Mountpoint", ""),
+                "scope": volume.attrs.get("Scope", ""),
+                "labels": volume.attrs.get("Labels") or {},
+            }
+            for volume in volumes
+        ]
+
+    def remove_volume(self, volume_name: str) -> None:
+        """Remove a docker volume by name."""
+        try:
+            volume = self.client.volumes.get(volume_name)
+            volume.remove(force=False)
+        except NotFound as exc:
+            raise ValueError("Volume not found") from exc
+        except APIError as exc:
+            raise ValueError(f"Docker API error: {exc.explanation}") from exc
+
+    def list_networks(self) -> list[dict[str, Any]]:
+        """List docker networks with useful metadata for the UI."""
+        networks = self.client.networks.list()
+        return [
+            {
+                "id": network.id[:12],
+                "name": network.name,
+                "driver": network.attrs.get("Driver", ""),
+                "scope": network.attrs.get("Scope", ""),
+                "containers": len((network.attrs.get("Containers") or {}).keys()),
+                "labels": network.attrs.get("Labels") or {},
+            }
+            for network in networks
+        ]
+
+    def remove_network(self, network_id: str) -> None:
+        """Remove a docker network by id or name."""
+        try:
+            network = self.client.networks.get(network_id)
+            network.remove()
+        except NotFound as exc:
+            raise ValueError("Network not found") from exc
+        except APIError as exc:
+            raise ValueError(f"Docker API error: {exc.explanation}") from exc
 
     def _get_container_or_raise(self, container_id: str):
         try:

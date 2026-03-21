@@ -73,3 +73,12 @@ export async function updateEnvText(containerId: string, content: string): Promi
   });
   await handleJson<{ status: string }>(res, 'Failed to update env file');
 }
+
+export async function applyContainerChanges(containerId: string): Promise<string> {
+  const res = await fetch(`${BASE}/${containerId}/apply`, { method: 'POST' });
+  const payload = await handleJson<{ status: string; output: string }>(
+    res,
+    'Failed to apply compose changes',
+  );
+  return payload.output;
+}

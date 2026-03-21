@@ -18,6 +18,7 @@ interface NavItem {
 const navItems: NavItem[] = [
   { to: '/dashboard', icon: '📊', label: 'Dashboard' },
   { to: '/containers', icon: '🐳', label: 'Containers' },
+  { to: '/docker-resources', icon: '🧱', label: 'Docker Resources' },
   { to: '/marketplace', icon: '🛒', label: 'Marketplace' },
   { to: '/domains', icon: '🌐', label: 'Domains' },
   { to: '/backup', icon: '💾', label: 'Backup' },
