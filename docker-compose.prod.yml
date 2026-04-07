@@ -47,7 +47,7 @@ services:
     env_file:
       - .env
     environment:
-      SITE_ADDRESS: ${SITE_ADDRESS:-http://localhost}
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
       ACME_EMAIL: ${ACME_EMAIL:-admin@example.com}
       ACME_CA: ${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
     ports:
