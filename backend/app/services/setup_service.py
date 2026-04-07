@@ -249,8 +249,9 @@ async def initialize_setup(db: AsyncSession, payload: SetupPayload) -> dict[str,
 
     _upsert_env_value(root_env, "DOMAIN", domain)
     _upsert_env_value(root_env, "ACME_EMAIL", payload.acme_email.strip())
-    _upsert_env_value(root_env, "CADDY_AUTO_HTTPS", "on" if https_enabled else "off")
     _upsert_env_value(root_env, "ACME_CA", acme_ca)
+    site_address = domain if https_enabled else f"http://{domain}"
+    _upsert_env_value(root_env, "SITE_ADDRESS", site_address)
 
     backend_domain = f"{'https' if https_enabled else 'http'}://{domain}"
     _upsert_env_value(backend_env, "DOMAIN", backend_domain)

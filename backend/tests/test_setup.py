@@ -82,7 +82,7 @@ async def test_setup_initialize_writes_env_and_persists_state(
 
     assert "DOMAIN=home.example.com" in root_env
     assert "ACME_EMAIL=admin@example.com" in root_env
-    assert "CADDY_AUTO_HTTPS=on" in root_env
+    assert "SITE_ADDRESS=home.example.com" in root_env
     assert "acme-staging-v02.api.letsencrypt.org" in root_env
     assert "DOMAIN=https://home.example.com" in backend_env
     assert "CORS_ORIGINS=https://home.example.com" in backend_env
