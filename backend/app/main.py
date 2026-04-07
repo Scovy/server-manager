@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.database import async_session
-from app.routers import containers, docker_resources, health, metrics
+from app.routers import containers, docker_resources, health, marketplace, metrics
 from app.services.scheduler import start_scheduler, stop_scheduler
 
 logger = logging.getLogger(__name__)
@@ -78,3 +78,4 @@ app.include_router(health.router)
 app.include_router(metrics.router)
 app.include_router(containers.router)
 app.include_router(docker_resources.router)
+app.include_router(marketplace.router)

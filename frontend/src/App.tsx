@@ -20,6 +20,7 @@ import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Containers from './pages/Containers';
 import DockerResources from './pages/DockerResources';
+import Marketplace from './pages/Marketplace';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -62,7 +63,7 @@ export default function App() {
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/containers" element={<Containers />} />
             <Route path="/docker-resources" element={<DockerResources />} />
-            <Route path="/marketplace" element={<ComingSoon title="Marketplace" />} />
+            <Route path="/marketplace" element={<Marketplace />} />
             <Route path="/domains" element={<ComingSoon title="Domains & SSL" />} />
             <Route path="/backup" element={<ComingSoon title="Backup & Restore" />} />
             <Route path="/security" element={<ComingSoon title="Security" />} />
