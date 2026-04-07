@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import re
+import socket
+import subprocess
+from pathlib import Path
 from typing import TypedDict
+
+from app.config import settings
 
 
 class MarketplaceTemplate(TypedDict):
@@ -16,6 +22,32 @@ class MarketplaceTemplate(TypedDict):
     version: str
     homepage: str
     default_port: int
+    container_port: int
+    default_env: dict[str, str]
+
+
+class MarketplaceDeployRequest(TypedDict):
+    """Payload used to deploy a template instance."""
+
+    template_id: str
+    app_name: str
+    host_port: int
+    env: dict[str, str]
+
+
+class MarketplaceDeployResult(TypedDict):
+    """Deploy operation result returned to API callers."""
+
+    status: str
+    template_id: str
+    app_name: str
+    host_port: int
+    app_dir: str
+    compose_path: str
+    output: str
+
+
+APP_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{2,40}$")
 
 
 _TEMPLATES: list[MarketplaceTemplate] = [
@@ -28,6 +60,8 @@ _TEMPLATES: list[MarketplaceTemplate] = [
         "version": "latest",
         "homepage": "https://nextcloud.com",
         "default_port": 8080,
+        "container_port": 80,
+        "default_env": {},
     },
     {
         "id": "gitea",
@@ -38,6 +72,11 @@ _TEMPLATES: list[MarketplaceTemplate] = [
         "version": "latest",
         "homepage": "https://about.gitea.com",
         "default_port": 3000,
+        "container_port": 3000,
+        "default_env": {
+            "USER_UID": "1000",
+            "USER_GID": "1000",
+        },
     },
     {
         "id": "vaultwarden",
@@ -48,6 +87,11 @@ _TEMPLATES: list[MarketplaceTemplate] = [
         "version": "latest",
         "homepage": "https://github.com/dani-garcia/vaultwarden",
         "default_port": 8081,
+        "container_port": 80,
+        "default_env": {
+            "WEBSOCKET_ENABLED": "true",
+            "SIGNUPS_ALLOWED": "false",
+        },
     },
     {
         "id": "uptime-kuma",
@@ -58,6 +102,8 @@ _TEMPLATES: list[MarketplaceTemplate] = [
         "version": "1",
         "homepage": "https://uptime.kuma.pet",
         "default_port": 3001,
+        "container_port": 3001,
+        "default_env": {},
     },
     {
         "id": "jellyfin",
@@ -68,6 +114,8 @@ _TEMPLATES: list[MarketplaceTemplate] = [
         "version": "latest",
         "homepage": "https://jellyfin.org",
         "default_port": 8096,
+        "container_port": 8096,
+        "default_env": {},
     },
 ]
 
@@ -112,3 +160,114 @@ def get_template(template_id: str) -> MarketplaceTemplate:
         if template["id"].lower() == lowered_id:
             return template
     raise ValueError("Template not found")
+
+
+def is_port_available(port: int) -> bool:
+    """Check whether a host port is available for binding."""
+    if port < 1 or port > 65535:
+        return False
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("0.0.0.0", port))
+        except OSError:
+            return False
+    return True
+
+
+def _render_compose(
+    template: MarketplaceTemplate,
+    app_name: str,
+    host_port: int,
+    env: dict[str, str],
+) -> str:
+    lines = [
+        "services:",
+        f"  {app_name}:",
+        f"    image: {template['image']}",
+        f"    container_name: {app_name}",
+        "    restart: unless-stopped",
+        "    ports:",
+        f"      - \"{host_port}:{template['container_port']}\"",
+    ]
+    if env:
+        lines.append("    environment:")
+        for key, value in sorted(env.items()):
+            lines.append(f"      {key}: \"{value}\"")
+    return "\n".join(lines) + "\n"
+
+
+def _validate_deploy_request(request: MarketplaceDeployRequest) -> None:
+    app_name = request["app_name"].strip()
+    if not APP_NAME_PATTERN.fullmatch(app_name):
+        raise ValueError(
+            "App name must be 3-41 chars and contain only letters, numbers, _ or -"
+        )
+
+    if request["host_port"] < 1 or request["host_port"] > 65535:
+        raise ValueError("Host port must be between 1 and 65535")
+
+    for key in request["env"]:
+        if not key or "=" in key or " " in key:
+            raise ValueError(f"Invalid env key: {key}")
+
+
+def deploy_template(request: MarketplaceDeployRequest) -> MarketplaceDeployResult:
+    """Deploy a marketplace template using docker compose.
+
+    Creates compose and env files in app directory and runs docker compose up.
+    """
+    _validate_deploy_request(request)
+
+    template = get_template(request["template_id"])
+    app_name = request["app_name"].strip()
+    host_port = request["host_port"]
+    env = {**template["default_env"], **request["env"]}
+
+    apps_dir = Path(settings.MARKETPLACE_APPS_DIR).expanduser().resolve()
+    app_dir = apps_dir / app_name
+    compose_path = app_dir / "docker-compose.yml"
+    env_path = app_dir / ".env"
+
+    if app_dir.exists():
+        raise ValueError("Application with this name already exists")
+
+    if not is_port_available(host_port):
+        raise ValueError(f"Host port {host_port} is already in use")
+
+    app_dir.mkdir(parents=True, exist_ok=False)
+    compose_content = _render_compose(template, app_name, host_port, env)
+    compose_path.write_text(compose_content, encoding="utf-8")
+    env_path.write_text(
+        "\n".join(f"{k}={v}" for k, v in sorted(env.items())) + ("\n" if env else ""),
+        encoding="utf-8",
+    )
+
+    try:
+        proc = subprocess.run(
+            ["docker", "compose", "-f", str(compose_path), "up", "-d"],
+            cwd=str(app_dir),
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
+        )
+    except OSError as exc:
+        raise ValueError(f"Failed to run docker compose: {exc}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError("docker compose deploy timed out") from exc
+
+    if proc.returncode != 0:
+        stderr = proc.stderr.strip() or proc.stdout.strip() or "Unknown docker compose error"
+        raise ValueError(f"Deploy failed: {stderr}")
+
+    return {
+        "status": "ok",
+        "template_id": template["id"],
+        "app_name": app_name,
+        "host_port": host_port,
+        "app_dir": str(app_dir),
+        "compose_path": str(compose_path),
+        "output": proc.stdout.strip() or "Deployment completed successfully",
+    }

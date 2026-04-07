@@ -1,5 +1,7 @@
 """Tests for marketplace catalog endpoints."""
 
+from unittest.mock import patch
+
 import pytest
 from httpx import AsyncClient
 
@@ -50,3 +52,79 @@ async def test_marketplace_get_missing_template(client: AsyncClient):
     res = await client.get("/api/marketplace/missing-template")
 
     assert res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_marketplace_deploy_success(client: AsyncClient, tmp_path: str, monkeypatch):
+    monkeypatch.setattr(
+        "app.services.marketplace_service.settings.MARKETPLACE_APPS_DIR",
+        str(tmp_path),
+    )
+
+    with patch("app.services.marketplace_service.subprocess.run") as mock_run:
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = "deployed"
+        mock_run.return_value.stderr = ""
+
+        res = await client.post(
+            "/api/marketplace/deploy",
+            json={
+                "template_id": "gitea",
+                "app_name": "gitea-demo",
+                "host_port": 3010,
+                "env": {"USER_UID": "1000"},
+            },
+        )
+
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["status"] == "ok"
+    assert payload["app_name"] == "gitea-demo"
+
+
+@pytest.mark.asyncio
+async def test_marketplace_deploy_duplicate_app_name(
+    client: AsyncClient,
+    tmp_path: str,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "app.services.marketplace_service.settings.MARKETPLACE_APPS_DIR",
+        str(tmp_path),
+    )
+    (tmp_path / "gitea-demo").mkdir(parents=True)
+
+    res = await client.post(
+        "/api/marketplace/deploy",
+        json={
+            "template_id": "gitea",
+            "app_name": "gitea-demo",
+            "host_port": 3010,
+            "env": {},
+        },
+    )
+
+    assert res.status_code == 400
+    assert "already exists" in res.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_marketplace_deploy_port_in_use(client: AsyncClient, tmp_path: str, monkeypatch):
+    monkeypatch.setattr(
+        "app.services.marketplace_service.settings.MARKETPLACE_APPS_DIR",
+        str(tmp_path),
+    )
+    monkeypatch.setattr("app.services.marketplace_service.is_port_available", lambda _: False)
+
+    res = await client.post(
+        "/api/marketplace/deploy",
+        json={
+            "template_id": "gitea",
+            "app_name": "gitea-demo",
+            "host_port": 3010,
+            "env": {},
+        },
+    )
+
+    assert res.status_code == 400
+    assert "port" in res.json()["detail"].lower()

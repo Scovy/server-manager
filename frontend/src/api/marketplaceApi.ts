@@ -1,4 +1,8 @@
-import type { MarketplaceTemplate } from '../types/marketplace';
+import type {
+  MarketplaceDeployRequest,
+  MarketplaceDeployResult,
+  MarketplaceTemplate,
+} from '../types/marketplace';
 
 const BASE = '/api/marketplace';
 
@@ -27,4 +31,15 @@ export async function fetchMarketplaceTemplates(
 export async function fetchMarketplaceTemplate(templateId: string): Promise<MarketplaceTemplate> {
   const res = await fetch(`${BASE}/${templateId}`);
   return handleJson<MarketplaceTemplate>(res, 'Failed to fetch marketplace template');
+}
+
+export async function deployMarketplaceTemplate(
+  payload: MarketplaceDeployRequest,
+): Promise<MarketplaceDeployResult> {
+  const res = await fetch(`${BASE}/deploy`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return handleJson<MarketplaceDeployResult>(res, 'Failed to deploy marketplace template');
 }

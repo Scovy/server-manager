@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     # Infrastructure
     DOMAIN: str = "localhost"
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:3000"
+    MARKETPLACE_APPS_DIR: str = "./apps"
 
     # Metrics
     METRICS_WS_INTERVAL_SECONDS: float = 1.0
