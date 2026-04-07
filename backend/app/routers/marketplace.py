@@ -186,6 +186,18 @@ async def remove_installed_app(
     return {"status": "ok", "message": message}
 
 
+@router.post("/sync-routes")
+async def sync_marketplace_routes(db: AsyncSession = Depends(get_db)) -> dict[str, str]:
+    """Force-sync Caddy routes for all installed marketplace apps."""
+    base_domain = await _get_base_domain(db)
+    rows = await db.execute(select(App.app_name, App.host_port))
+    message = sync_caddy_marketplace_routes(
+        [(name, port) for name, port in rows.all()],
+        base_domain,
+    )
+    return {"status": "ok", "message": message}
+
+
 @router.get("/{template_id}")
 def get_marketplace_template(template_id: str) -> MarketplaceTemplate:
     """Return template metadata for one marketplace item."""
