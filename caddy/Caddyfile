@@ -2,9 +2,6 @@
     # Contact email used for ACME account registration (Let's Encrypt).
     email {$ACME_EMAIL:admin@example.com}
 
-    # Keep HTTPS enabled by default; set CADDY_AUTO_HTTPS=off for local HTTP-only runs.
-    auto_https {$CADDY_AUTO_HTTPS:on}
-
     # Supports staging CA for dry-runs:
     # https://acme-staging-v02.api.letsencrypt.org/directory
     acme_ca {$ACME_CA:https://acme-v02.api.letsencrypt.org/directory}
