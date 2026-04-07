@@ -168,3 +168,72 @@ async def test_marketplace_deploy_falls_back_to_docker_sdk(
     payload = res.json()
     assert payload["status"] == "ok"
     assert "container started" in payload["output"].lower()
+
+
+@pytest.mark.asyncio
+async def test_marketplace_preflight_rejects_invalid_payload(
+    client: AsyncClient,
+    monkeypatch,
+):
+    monkeypatch.setattr("app.services.marketplace_service.is_port_available", lambda _: False)
+
+    res = await client.post(
+        "/api/marketplace/preflight",
+        json={
+            "template_id": "missing-template",
+            "app_name": "x",
+            "host_port": 3010,
+        },
+    )
+
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["valid"] is False
+    assert any("template" in err.lower() for err in payload["errors"])
+    assert any("app name" in err.lower() for err in payload["errors"])
+    assert any("port" in err.lower() for err in payload["errors"])
+
+
+@pytest.mark.asyncio
+async def test_marketplace_installed_list_and_remove(
+    client: AsyncClient,
+    tmp_path: str,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "app.services.marketplace_service.settings.MARKETPLACE_APPS_DIR",
+        str(tmp_path),
+    )
+    monkeypatch.setattr("app.routers.marketplace.get_container_status", lambda _: "running")
+    monkeypatch.setattr("app.routers.marketplace.remove_deployed_app", lambda *_args, **_kwargs: "Application removed")
+
+    with patch("app.services.marketplace_service.subprocess.run") as mock_run:
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = "deployed"
+        mock_run.return_value.stderr = ""
+
+        deploy_res = await client.post(
+            "/api/marketplace/deploy",
+            json={
+                "template_id": "gitea",
+                "app_name": "gitea-installed",
+                "host_port": 3012,
+                "env": {},
+            },
+        )
+
+    assert deploy_res.status_code == 200
+
+    list_res = await client.get("/api/marketplace/installed")
+    assert list_res.status_code == 200
+    apps = list_res.json()
+    assert len(apps) == 1
+    assert apps[0]["app_name"] == "gitea-installed"
+    assert apps[0]["status"] == "running"
+
+    remove_res = await client.delete("/api/marketplace/installed/gitea-installed")
+    assert remove_res.status_code == 200
+
+    list_after = await client.get("/api/marketplace/installed")
+    assert list_after.status_code == 200
+    assert list_after.json() == []

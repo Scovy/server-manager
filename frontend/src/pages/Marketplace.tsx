@@ -1,8 +1,14 @@
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
-import { deployMarketplaceTemplate, fetchMarketplaceTemplates } from '../api/marketplaceApi';
-import type { MarketplaceTemplate } from '../types/marketplace';
+import {
+  deployMarketplaceTemplate,
+  fetchInstalledApps,
+  fetchMarketplaceTemplates,
+  preflightMarketplaceTemplate,
+  removeInstalledApp,
+} from '../api/marketplaceApi';
+import type { InstalledApp, MarketplaceTemplate } from '../types/marketplace';
 import './Marketplace.css';
 
 const categories = ['all', 'dev', 'media', 'monitoring', 'productivity', 'security'];
@@ -16,11 +22,23 @@ export default function Marketplace() {
   const [deployEnvText, setDeployEnvText] = useState('');
   const [deployMessage, setDeployMessage] = useState('');
   const [deployError, setDeployError] = useState('');
+  const [preflightErrors, setPreflightErrors] = useState<string[]>([]);
   const [deploying, setDeploying] = useState(false);
+  const [purgeOnRemove, setPurgeOnRemove] = useState(false);
+  const [removeMessage, setRemoveMessage] = useState('');
+  const [removingAppName, setRemovingAppName] = useState<string>('');
   const nextCategory = category === 'all' ? '' : category;
   const { data: items = [], isLoading, error } = useQuery<MarketplaceTemplate[]>({
     queryKey: ['marketplace', nextCategory, search],
     queryFn: () => fetchMarketplaceTemplates(nextCategory, search),
+  });
+  const {
+    data: installedApps = [],
+    isLoading: loadingInstalled,
+    refetch: refetchInstalled,
+  } = useQuery<InstalledApp[]>({
+    queryKey: ['marketplace-installed'],
+    queryFn: fetchInstalledApps,
   });
 
   const countLabel = useMemo(() => `${items.length} template${items.length === 1 ? '' : 's'}`, [items]);
@@ -55,11 +73,13 @@ export default function Marketplace() {
     setDeployEnvText(envMapToText(template.default_env));
     setDeployMessage('');
     setDeployError('');
+    setPreflightErrors([]);
   }
 
   async function submitDeploy(templateId: string) {
     setDeployMessage('');
     setDeployError('');
+    setPreflightErrors([]);
 
     const hostPort = Number(deployHostPort);
     if (!Number.isInteger(hostPort) || hostPort < 1 || hostPort > 65535) {
@@ -70,6 +90,16 @@ export default function Marketplace() {
     try {
       const env = parseEnvText(deployEnvText);
       setDeploying(true);
+      const preflight = await preflightMarketplaceTemplate({
+        template_id: templateId,
+        app_name: deployAppName,
+        host_port: hostPort,
+      });
+      if (!preflight.valid) {
+        setPreflightErrors(preflight.errors);
+        return;
+      }
+
       const result = await deployMarketplaceTemplate({
         template_id: templateId,
         app_name: deployAppName,
@@ -78,10 +108,27 @@ export default function Marketplace() {
       });
       setDeployMessage(`Deployed ${result.app_name} on port ${result.host_port}.`);
       setDeployTemplateId('');
+      await refetchInstalled();
     } catch (err) {
       setDeployError(err instanceof Error ? err.message : 'Deploy failed');
     } finally {
       setDeploying(false);
+    }
+  }
+
+  async function handleRemove(appName: string) {
+    setRemoveMessage('');
+    setDeployError('');
+    setPreflightErrors([]);
+    try {
+      setRemovingAppName(appName);
+      const result = await removeInstalledApp(appName, purgeOnRemove);
+      setRemoveMessage(result.message);
+      await refetchInstalled();
+    } catch (err) {
+      setDeployError(err instanceof Error ? err.message : 'Failed to remove app');
+    } finally {
+      setRemovingAppName('');
     }
   }
 
@@ -126,7 +173,52 @@ export default function Marketplace() {
       {deployMessage ? (
         <div className="marketplace-page__notice marketplace-page__notice--success">{deployMessage}</div>
       ) : null}
+      {removeMessage ? (
+        <div className="marketplace-page__notice marketplace-page__notice--success">{removeMessage}</div>
+      ) : null}
+      {preflightErrors.length > 0 ? (
+        <div className="marketplace-page__notice marketplace-page__notice--error">
+          {preflightErrors.join(' ')}
+        </div>
+      ) : null}
       {isLoading ? <div className="card">Loading templates...</div> : null}
+
+      <section className="card marketplace-installed">
+        <div className="marketplace-installed__header">
+          <h2>Installed Apps</h2>
+          <label className="marketplace-installed__purge">
+            <input
+              type="checkbox"
+              checked={purgeOnRemove}
+              onChange={(e) => setPurgeOnRemove(e.target.checked)}
+            />
+            Purge app files on remove
+          </label>
+        </div>
+        {loadingInstalled ? <p>Loading installed apps...</p> : null}
+        {!loadingInstalled && installedApps.length === 0 ? <p>No installed apps yet.</p> : null}
+        {!loadingInstalled && installedApps.length > 0 ? (
+          <div className="marketplace-installed__list">
+            {installedApps.map((app) => (
+              <div className="marketplace-installed__item" key={app.id}>
+                <div>
+                  <h3>{app.app_name}</h3>
+                  <p>
+                    {app.template_id} on port {app.host_port} ({app.status})
+                  </p>
+                </div>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => void handleRemove(app.app_name)}
+                  disabled={removingAppName === app.app_name}
+                >
+                  {removingAppName === app.app_name ? 'Removing...' : 'Remove'}
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </section>
 
       {!isLoading && items.length === 0 ? (
         <div className="card">No templates match the current filters.</div>

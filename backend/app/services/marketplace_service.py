@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import re
+import shutil
 import socket
 import subprocess
 from pathlib import Path
 from typing import TypedDict
 
 import docker
-from docker.errors import APIError, NotFound
+from docker.errors import APIError, DockerException, NotFound
 
 from app.config import settings
 
@@ -48,6 +49,21 @@ class MarketplaceDeployResult(TypedDict):
     app_dir: str
     compose_path: str
     output: str
+
+
+class MarketplacePreflightRequest(TypedDict):
+    """Validation payload used before deploy submit."""
+
+    template_id: str
+    app_name: str
+    host_port: int
+
+
+class MarketplacePreflightResult(TypedDict):
+    """Validation result returned to API callers."""
+
+    valid: bool
+    errors: list[str]
 
 
 APP_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{2,40}$")
@@ -216,6 +232,41 @@ def _validate_deploy_request(request: MarketplaceDeployRequest) -> None:
             raise ValueError(f"Invalid env key: {key}")
 
 
+def preflight_deploy(
+    request: MarketplacePreflightRequest,
+    existing_app_names: set[str],
+) -> MarketplacePreflightResult:
+    """Validate deploy payload before running deployment actions."""
+    errors: list[str] = []
+
+    try:
+        get_template(request["template_id"])
+    except ValueError:
+        errors.append("Template not found")
+
+    app_name = request["app_name"].strip()
+    if not APP_NAME_PATTERN.fullmatch(app_name):
+        errors.append("App name must be 3-41 chars and contain only letters, numbers, _ or -")
+
+    if app_name in existing_app_names:
+        errors.append("Application with this name already exists")
+
+    app_dir = Path(settings.MARKETPLACE_APPS_DIR).expanduser().resolve() / app_name
+    if app_name and app_dir.exists():
+        errors.append("App directory already exists on disk")
+
+    host_port = request["host_port"]
+    if host_port < 1 or host_port > 65535:
+        errors.append("Host port must be between 1 and 65535")
+    elif not is_port_available(host_port):
+        errors.append(f"Host port {host_port} is already in use")
+
+    return {
+        "valid": len(errors) == 0,
+        "errors": errors,
+    }
+
+
 def deploy_template(request: MarketplaceDeployRequest) -> MarketplaceDeployResult:
     """Deploy a marketplace template using docker compose.
 
@@ -288,7 +339,11 @@ def _deploy_with_docker_sdk(
     env: dict[str, str],
 ) -> str:
     """Deploy container directly with Docker SDK when docker CLI is unavailable."""
-    client = docker.from_env()
+    try:
+        client = docker.from_env()
+    except DockerException as exc:
+        raise ValueError(f"Deploy failed: {exc}") from exc
+
     try:
         try:
             client.containers.get(app_name)
@@ -315,3 +370,55 @@ def _deploy_with_docker_sdk(
         raise ValueError(f"Deploy failed: {exc.explanation}") from exc
     finally:
         client.close()
+
+
+def get_container_status(container_name: str) -> str:
+    """Return live container status by name, or 'not-found'/'unknown'."""
+    try:
+        client = docker.from_env()
+    except DockerException:
+        return "unknown"
+
+    try:
+        container = client.containers.get(container_name)
+        return str(container.status)
+    except NotFound:
+        return "not-found"
+    except APIError:
+        return "unknown"
+    except Exception:
+        return "unknown"
+    finally:
+        client.close()
+
+
+def remove_deployed_app(container_name: str, app_dir: str, purge_files: bool = False) -> str:
+    """Remove deployed marketplace container and optionally app files."""
+    try:
+        client = docker.from_env()
+    except DockerException as exc:
+        raise ValueError(f"Failed to connect to docker: {exc}") from exc
+
+    try:
+        try:
+            container = client.containers.get(container_name)
+        except NotFound:
+            container = None
+
+        if container is not None:
+            try:
+                container.stop(timeout=10)
+            except APIError:
+                pass
+            container.remove(v=False, force=True)
+    except APIError as exc:
+        raise ValueError(f"Failed to remove app container: {exc.explanation}") from exc
+    finally:
+        client.close()
+
+    if purge_files:
+        app_path = Path(app_dir)
+        if app_path.exists() and app_path.is_dir():
+            shutil.rmtree(app_path)
+
+    return "Application removed"

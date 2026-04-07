@@ -27,3 +27,27 @@ export interface MarketplaceDeployResult {
   compose_path: string;
   output: string;
 }
+
+export interface MarketplacePreflightRequest {
+  template_id: string;
+  app_name: string;
+  host_port: number;
+}
+
+export interface MarketplacePreflightResult {
+  valid: boolean;
+  errors: string[];
+}
+
+export interface InstalledApp {
+  id: number;
+  template_id: string;
+  app_name: string;
+  container_name: string;
+  host_port: number;
+  app_dir: string;
+  compose_path: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}

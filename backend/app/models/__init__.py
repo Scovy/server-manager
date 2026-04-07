@@ -15,6 +15,7 @@ class Base(DeclarativeBase):
 
 # Import all models so they are registered with Base.metadata
 # This is required for Alembic autogenerate to detect them.
+from app.models.app import App  # noqa: E402, F401
 from app.models.audit_log import AuditLog  # noqa: E402, F401
 from app.models.metrics_history import MetricsHistory  # noqa: E402, F401
 from app.models.setting import Setting  # noqa: E402, F401
