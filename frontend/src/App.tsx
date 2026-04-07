@@ -14,13 +14,15 @@
  */
 
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import MainLayout from './layouts/MainLayout';
+import { fetchSetupStatus } from './api/setupApi';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Containers from './pages/Containers';
 import DockerResources from './pages/DockerResources';
 import Marketplace from './pages/Marketplace';
+import SetupWizard from './pages/SetupWizard';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -53,7 +55,53 @@ function ComingSoon({ title }: { title: string }) {
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
+      <AppRoutes />
+    </QueryClientProvider>
+  );
+}
+
+function AppRoutes() {
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ['setup-status'],
+    queryFn: fetchSetupStatus,
+  });
+
+  if (isLoading) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: '1rem' }}>
+        <div className="card">Checking setup status...</div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: '1rem' }}>
+        <div className="card" style={{ display: 'grid', gap: '1rem', maxWidth: 520 }}>
+          <h1 style={{ fontSize: 'var(--text-2xl)', fontWeight: 700 }}>Setup status unavailable</h1>
+          <p style={{ color: 'var(--color-text-secondary)' }}>
+            {error instanceof Error ? error.message : 'Could not reach backend setup endpoint.'}
+          </p>
+          <button className="btn btn-primary" onClick={() => void refetch()}>
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const initialized = Boolean(data?.initialized);
+
+  return (
+    <BrowserRouter>
+      {!initialized ? (
+        <Routes>
+          <Route path="/setup" element={<SetupWizard onInitialized={async () => {
+            await refetch();
+          }} />} />
+          <Route path="*" element={<Navigate to="/setup" replace />} />
+        </Routes>
+      ) : (
         <Routes>
           {/* Auth routes — no sidebar */}
           <Route path="/login" element={<Login />} />
@@ -73,7 +121,7 @@ export default function App() {
           {/* Default redirect */}
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
-      </BrowserRouter>
-    </QueryClientProvider>
+      )}
+    </BrowserRouter>
   );
 }
