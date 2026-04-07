@@ -181,7 +181,7 @@ async def test_marketplace_preflight_rejects_invalid_payload(
         "/api/marketplace/preflight",
         json={
             "template_id": "missing-template",
-            "app_name": "x",
+            "app_name": "bad name",
             "host_port": 3010,
         },
     )
