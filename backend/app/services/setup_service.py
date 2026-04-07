@@ -59,6 +59,21 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+def _resolve_env_paths() -> tuple[Path, Path]:
+    """Resolve root and backend env paths in both dev and container layouts."""
+    root = _repo_root()
+    root_env = root / ".env"
+
+    backend_dir = root / "backend"
+    if backend_dir.is_dir():
+        backend_env = backend_dir / ".env"
+    else:
+        # In container images, backend code typically lives directly under /app.
+        backend_env = root_env
+
+    return root_env, backend_env
+
+
 def _normalize_domain(value: str) -> str:
     domain = value.strip().lower()
     domain = domain.replace("http://", "").replace("https://", "")
@@ -183,8 +198,7 @@ def run_preflight(payload: SetupPayload) -> SetupPreflightResult:
                     )
                 )
 
-    root_env = _repo_root() / ".env"
-    backend_env = _repo_root() / "backend" / ".env"
+    root_env, backend_env = _resolve_env_paths()
     for label, env_path in (("root_env", root_env), ("backend_env", backend_env)):
         try:
             parent = env_path.parent
@@ -244,8 +258,7 @@ async def initialize_setup(db: AsyncSession, payload: SetupPayload) -> dict[str,
         else "https://acme-v02.api.letsencrypt.org/directory"
     )
 
-    root_env = _repo_root() / ".env"
-    backend_env = _repo_root() / "backend" / ".env"
+    root_env, backend_env = _resolve_env_paths()
 
     _upsert_env_value(root_env, "DOMAIN", domain)
     _upsert_env_value(root_env, "ACME_EMAIL", payload.acme_email.strip())
