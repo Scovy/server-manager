@@ -14,10 +14,19 @@ const defaultPreflight: SetupPreflightResult = {
   checks: [],
 };
 
+function isIpOrLocalDomain(value: string): boolean {
+  const domain = value.trim().toLowerCase();
+  if (!domain) return true;
+  if (domain === 'localhost' || domain === '127.0.0.1') return true;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(domain)) return true;
+  return false;
+}
+
 export default function SetupWizard({ onInitialized }: SetupWizardProps) {
-  const [domain, setDomain] = useState(window.location.hostname || 'localhost');
+  const initialDomain = window.location.hostname || 'localhost';
+  const [domain, setDomain] = useState(initialDomain);
   const [acmeEmail, setAcmeEmail] = useState('');
-  const [enableHttps, setEnableHttps] = useState(true);
+  const [enableHttps, setEnableHttps] = useState(!isIpOrLocalDomain(initialDomain));
   const [useStaging, setUseStaging] = useState(false);
   const [corsOrigins, setCorsOrigins] = useState('http://localhost:5173,http://localhost:3000');
   const [preflight, setPreflight] = useState<SetupPreflightResult>(defaultPreflight);
@@ -30,6 +39,7 @@ export default function SetupWizard({ onInitialized }: SetupWizardProps) {
     if (!preflight.errors.length && !preflight.warnings.length) return '';
     return `Errors: ${preflight.errors.length}, Warnings: ${preflight.warnings.length}`;
   }, [preflight.errors.length, preflight.warnings.length]);
+  const localDomain = isIpOrLocalDomain(domain);
 
   function buildPayload(): SetupRequest {
     return {
@@ -85,6 +95,12 @@ export default function SetupWizard({ onInitialized }: SetupWizardProps) {
 
         {error ? <div className="setup-notice setup-notice--error">{error}</div> : null}
         {message ? <div className="setup-notice setup-notice--success">{message}</div> : null}
+        {localDomain ? (
+          <div className="setup-notice setup-notice--warn">
+            Local/IP address detected. Trusted TLS certificates require a real domain. For IP access,
+            use HTTP mode or provide a public domain and DNS record.
+          </div>
+        ) : null}
 
         <div className="setup-grid">
           <label>
@@ -121,6 +137,7 @@ export default function SetupWizard({ onInitialized }: SetupWizardProps) {
               type="checkbox"
               checked={useStaging}
               onChange={(e) => setUseStaging(e.target.checked)}
+              disabled={!enableHttps}
             />
             Use ACME staging (testing only)
           </label>
