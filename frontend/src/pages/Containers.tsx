@@ -74,6 +74,54 @@ function statusBadgeClass(status: string): string {
   return 'badge-danger';
 }
 
+function resolveContainerUrl(container: ContainerDetail | null): string | null {
+  if (!container) return null;
+
+  const preferredContainerPorts = [80, 8080, 3000, 8096, 9000, 5000];
+  const candidates: Array<{ containerPort: number; hostPort: number; hostIp: string }> = [];
+  const ports = container.ports as Record<string, unknown>;
+
+  for (const [containerSpec, binding] of Object.entries(ports)) {
+    if (!Array.isArray(binding) || binding.length === 0) continue;
+
+    const [containerPortRaw] = containerSpec.split('/');
+    const containerPort = Number(containerPortRaw);
+    if (!Number.isInteger(containerPort)) continue;
+
+    for (const item of binding) {
+      if (!item || typeof item !== 'object') continue;
+      const hostPortRaw = (item as { HostPort?: string }).HostPort;
+      const hostIpRaw = (item as { HostIp?: string }).HostIp;
+      const hostPort = Number(hostPortRaw);
+      if (!Number.isInteger(hostPort)) continue;
+      candidates.push({
+        containerPort,
+        hostPort,
+        hostIp: hostIpRaw || '',
+      });
+    }
+  }
+
+  if (candidates.length === 0) return null;
+
+  candidates.sort((a, b) => {
+    const aIndex = preferredContainerPorts.indexOf(a.containerPort);
+    const bIndex = preferredContainerPorts.indexOf(b.containerPort);
+    const aScore = aIndex === -1 ? 999 : aIndex;
+    const bScore = bIndex === -1 ? 999 : bIndex;
+    if (aScore !== bScore) return aScore - bScore;
+    return a.hostPort - b.hostPort;
+  });
+
+  const selected = candidates[0];
+  const host =
+    selected.hostIp && selected.hostIp !== '0.0.0.0' && selected.hostIp !== '::'
+      ? selected.hostIp
+      : window.location.hostname;
+
+  return `http://${host}:${selected.hostPort}`;
+}
+
 export default function Containers() {
   const [containers, setContainers] = useState<ContainerItem[]>([]);
   const [selectedId, setSelectedId] = useState<string>('');
@@ -92,6 +140,7 @@ export default function Containers() {
     () => [...containers].sort((a, b) => a.name.localeCompare(b.name)),
     [containers],
   );
+  const openAppUrl = useMemo(() => resolveContainerUrl(selected), [selected]);
 
   const loadContainers = useCallback(async (nextSelectedId?: string) => {
     setLoading(true);
@@ -440,6 +489,14 @@ export default function Containers() {
                 <button className="btn btn-secondary" onClick={() => void onAction('kill')}>Kill</button>
                 <button className="btn btn-secondary" onClick={() => void onApplyChanges()}>
                   Apply Changes
+                </button>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => openAppUrl && window.open(openAppUrl, '_blank', 'noopener,noreferrer')}
+                  disabled={!openAppUrl}
+                  title={openAppUrl ? `Open ${openAppUrl}` : 'No exposed host port found'}
+                >
+                  Open App
                 </button>
                 <button className="btn btn-danger" onClick={() => void onRemove()}>Remove</button>
               </div>
