@@ -31,7 +31,21 @@ async function handleJson<T>(res: Response, fallback: string): Promise<T> {
 
 export async function fetchSetupStatus(): Promise<SetupStatus> {
   const res = await fetch(`${BASE}/status`);
-  return handleJson<SetupStatus>(res, 'Failed to fetch setup status');
+  if (!res.ok) {
+    return handleJson<SetupStatus>(res, 'Failed to fetch setup status');
+  }
+
+  const text = await res.text();
+  if (!text.trim()) {
+    return { initialized: false };
+  }
+
+  try {
+    const payload = JSON.parse(text) as Partial<SetupStatus>;
+    return { initialized: Boolean(payload.initialized) };
+  } catch {
+    return { initialized: false };
+  }
 }
 
 export async function preflightSetup(payload: SetupRequest): Promise<SetupPreflightResult> {
