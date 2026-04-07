@@ -60,6 +60,10 @@ async def test_marketplace_deploy_success(client: AsyncClient, tmp_path: str, mo
         "app.services.marketplace_service.settings.MARKETPLACE_APPS_DIR",
         str(tmp_path),
     )
+    monkeypatch.setattr(
+        "app.routers.marketplace.sync_caddy_marketplace_routes",
+        lambda *_args, **_kwargs: "ok",
+    )
 
     with patch("app.services.marketplace_service.subprocess.run") as mock_run:
         mock_run.return_value.returncode = 0
@@ -80,6 +84,7 @@ async def test_marketplace_deploy_success(client: AsyncClient, tmp_path: str, mo
     payload = res.json()
     assert payload["status"] == "ok"
     assert payload["app_name"] == "gitea-demo"
+    assert payload["app_url"] == "http://127.0.0.1:3010"
 
 
 @pytest.mark.asyncio
@@ -139,6 +144,10 @@ async def test_marketplace_deploy_falls_back_to_docker_sdk(
     monkeypatch.setattr(
         "app.services.marketplace_service.settings.MARKETPLACE_APPS_DIR",
         str(tmp_path),
+    )
+    monkeypatch.setattr(
+        "app.routers.marketplace.sync_caddy_marketplace_routes",
+        lambda *_args, **_kwargs: "ok",
     )
 
     with patch("app.services.marketplace_service.subprocess.run") as mock_run:
@@ -204,6 +213,10 @@ async def test_marketplace_installed_list_and_remove(
         "app.services.marketplace_service.settings.MARKETPLACE_APPS_DIR",
         str(tmp_path),
     )
+    monkeypatch.setattr(
+        "app.routers.marketplace.sync_caddy_marketplace_routes",
+        lambda *_args, **_kwargs: "ok",
+    )
     monkeypatch.setattr("app.routers.marketplace.get_container_status", lambda _: "running")
     monkeypatch.setattr(
         "app.routers.marketplace.remove_deployed_app",
@@ -233,6 +246,7 @@ async def test_marketplace_installed_list_and_remove(
     assert len(apps) == 1
     assert apps[0]["app_name"] == "gitea-installed"
     assert apps[0]["status"] == "running"
+    assert apps[0]["app_url"] == "http://127.0.0.1:3012"
 
     remove_res = await client.delete("/api/marketplace/installed/gitea-installed")
     assert remove_res.status_code == 200

@@ -6,6 +6,8 @@ import re
 import shutil
 import socket
 import subprocess
+import tarfile
+from io import BytesIO
 from pathlib import Path
 from typing import TypedDict
 
@@ -48,6 +50,7 @@ class MarketplaceDeployResult(TypedDict):
     host_port: int
     app_dir: str
     compose_path: str
+    app_url: str
     output: str
 
 
@@ -67,6 +70,7 @@ class MarketplacePreflightResult(TypedDict):
 
 
 APP_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{2,40}$")
+IPV4_PATTERN = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 
 
 _TEMPLATES: list[MarketplaceTemplate] = [
@@ -328,8 +332,104 @@ def deploy_template(request: MarketplaceDeployRequest) -> MarketplaceDeployResul
         "host_port": host_port,
         "app_dir": str(app_dir),
         "compose_path": str(compose_path),
+        "app_url": f"http://127.0.0.1:{host_port}",
         "output": output,
     }
+
+
+def normalize_base_domain(value: str | None) -> str | None:
+    """Normalize configured domain by removing protocol and path segments."""
+    if not value:
+        return None
+    domain = value.strip().lower()
+    domain = domain.replace("http://", "").replace("https://", "")
+    domain = domain.split("/", 1)[0]
+    if not domain or domain in {"localhost", "127.0.0.1"}:
+        return None
+    if IPV4_PATTERN.fullmatch(domain):
+        return None
+    return domain
+
+
+def build_marketplace_app_url(app_name: str, host_port: int, base_domain: str | None) -> str:
+    """Build preferred app URL: subdomain when domain is configured, else host port URL."""
+    normalized = normalize_base_domain(base_domain)
+    if normalized:
+        return f"https://{app_name}.{normalized}"
+    return f"http://127.0.0.1:{host_port}"
+
+
+def sync_caddy_marketplace_routes(apps: list[tuple[str, int]], base_domain: str | None) -> str:
+    """Sync marketplace app routes into Caddy include file and reload Caddy.
+
+    Returns a status message and never raises, to avoid blocking deploy/remove flows.
+    """
+    normalized = normalize_base_domain(base_domain)
+    if not normalized:
+        return "Skipped Caddy route sync (no base domain configured)"
+
+    lines = [
+        "# Auto-generated marketplace routes",
+        "# Do not edit manually; managed by backend.",
+    ]
+    for app_name, host_port in sorted(apps, key=lambda item: item[0]):
+        lines.extend(
+            [
+                f"{app_name}.{normalized} {{",
+                f"    reverse_proxy host.docker.internal:{host_port}",
+                "    encode gzip zstd",
+                "}",
+                "",
+            ]
+        )
+
+    payload = "\n".join(lines).rstrip() + "\n"
+
+    try:
+        client = docker.from_env()
+    except DockerException as exc:
+        return f"Skipped Caddy route sync: {exc}"
+
+    try:
+        container_name = settings.CADDY_CONTAINER_NAME
+        target_path = settings.CADDY_MARKETPLACE_CONFIG_PATH
+
+        caddy = client.containers.get(container_name)
+        _put_text_file_in_container(caddy, target_path, payload)
+
+        cmd = "caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile"
+        result = caddy.exec_run(["sh", "-lc", cmd])
+        exit_code = result.exit_code
+        if exit_code != 0:
+            stderr = (result.output or b"").decode("utf-8", errors="ignore").strip()
+            return f"Caddy reload failed: {stderr or 'unknown error'}"
+        return "Caddy marketplace routes synced"
+    except Exception as exc:
+        return f"Skipped Caddy route sync: {exc}"
+    finally:
+        client.close()
+
+
+def _put_text_file_in_container(
+    container: docker.models.containers.Container,
+    path: str,
+    content: str,
+) -> None:
+    """Write a UTF-8 text file into a running container using tar archive upload."""
+    target = Path(path)
+    parent = str(target.parent)
+    tar_stream = BytesIO()
+
+    data = content.encode("utf-8")
+    info = tarfile.TarInfo(name=target.name)
+    info.size = len(data)
+    info.mode = 0o644
+
+    with tarfile.open(fileobj=tar_stream, mode="w") as tar:
+        tar.addfile(info, BytesIO(data))
+
+    tar_stream.seek(0)
+    container.put_archive(parent, tar_stream.read())
 
 
 def _deploy_with_docker_sdk(

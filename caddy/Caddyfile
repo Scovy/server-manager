@@ -31,5 +31,7 @@
     encode gzip zstd
 }
 
+import /etc/caddy/marketplace_apps.caddy
+
 # The Admin API is available internally on port 2019
 # We will use this in Phase 4 to dynamically add routes for marketplace apps

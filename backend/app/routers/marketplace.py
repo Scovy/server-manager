@@ -14,18 +14,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.app import App
+from app.models.setting import Setting
 from app.services.marketplace_service import (
     MarketplaceDeployRequest,
     MarketplaceDeployResult,
     MarketplacePreflightRequest,
     MarketplacePreflightResult,
     MarketplaceTemplate,
+    build_marketplace_app_url,
     deploy_template,
     get_container_status,
     get_template,
     list_templates,
+    normalize_base_domain,
     preflight_deploy,
     remove_deployed_app,
+    sync_caddy_marketplace_routes,
 )
 
 router = APIRouter(prefix="/api/marketplace", tags=["marketplace"])
@@ -49,6 +53,14 @@ def _handle_marketplace_error(exc: ValueError) -> NoReturn:
     message = str(exc)
     status = 404 if "not found" in message.lower() else 400
     raise HTTPException(status_code=status, detail=message)
+
+
+async def _get_base_domain(db: AsyncSession) -> str | None:
+    row = await db.execute(select(Setting).where(Setting.key == "setup_domain"))
+    setting = row.scalar_one_or_none()
+    if setting and setting.value:
+        return normalize_base_domain(setting.value)
+    return normalize_base_domain(None)
 
 
 @router.get("")
@@ -89,6 +101,17 @@ async def deploy_marketplace_template(
                 status="deployed",
             )
         )
+        await db.flush()
+
+        base_domain = await _get_base_domain(db)
+        rows = await db.execute(select(App.app_name, App.host_port))
+        sync_caddy_marketplace_routes([(name, port) for name, port in rows.all()], base_domain)
+
+        result["app_url"] = build_marketplace_app_url(
+            result["app_name"],
+            result["host_port"],
+            base_domain,
+        )
         return result
     except ValueError as exc:
         _handle_marketplace_error(exc)
@@ -113,6 +136,7 @@ async def preflight_marketplace_deploy(
 @router.get("/installed")
 async def list_installed_apps(db: AsyncSession = Depends(get_db)) -> list[dict[str, object]]:
     """List apps deployed from marketplace and their runtime status."""
+    base_domain = await _get_base_domain(db)
     rows = await db.execute(select(App).order_by(App.created_at.desc()))
     apps = rows.scalars().all()
     payload: list[dict[str, object]] = []
@@ -127,6 +151,7 @@ async def list_installed_apps(db: AsyncSession = Depends(get_db)) -> list[dict[s
                 "app_dir": app.app_dir,
                 "compose_path": app.compose_path,
                 "status": get_container_status(app.container_name),
+                "app_url": build_marketplace_app_url(app.app_name, app.host_port, base_domain),
                 "created_at": app.created_at.isoformat(),
                 "updated_at": app.updated_at.isoformat(),
             }
@@ -152,6 +177,12 @@ async def remove_installed_app(
         _handle_marketplace_error(exc)
 
     await db.delete(app)
+    await db.flush()
+
+    base_domain = await _get_base_domain(db)
+    rows = await db.execute(select(App.app_name, App.host_port))
+    sync_caddy_marketplace_routes([(name, port) for name, port in rows.all()], base_domain)
+
     return {"status": "ok", "message": message}
 
 

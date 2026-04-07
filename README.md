@@ -38,6 +38,10 @@ Web-based management panel for homelab servers. Provides system monitoring, Dock
 git clone https://github.com/user/homelab-dashboard.git
 cd homelab-dashboard
 
+# Setup Caddy/SSL environment
+cp .env.example .env
+# Edit .env and set SITE_ADDRESS + DOMAIN + ACME_EMAIL
+
 # Setup backend environment
 cp backend/.env.example backend/.env
 # Edit backend/.env and set a strong JWT_SECRET and correct DOMAIN
@@ -45,6 +49,27 @@ cp backend/.env.example backend/.env
 # Start the stack
 docker compose up -d
 ```
+
+## HTTPS / SSL Setup (Caddy)
+
+1. Point a public DNS record to your server IP, e.g. `home.example.com`.
+2. In project root `.env`, set:
+   - `SITE_ADDRESS=home.example.com`
+   - `DOMAIN=home.example.com`
+   - `ACME_EMAIL=you@example.com`
+3. Ensure ports 80 and 443 are open to the internet.
+4. Start or restart Caddy with Compose:
+   ```bash
+   docker compose up -d caddy
+   ```
+5. Verify certificate issuance:
+   ```bash
+   docker compose logs -f caddy
+   ```
+
+Notes:
+- For certificate dry-runs, set `ACME_CA=https://acme-staging-v02.api.letsencrypt.org/directory`.
+- For local testing without TLS, set `SITE_ADDRESS=http://192.168.56.10` (or `http://localhost`).
 
 ## Available Scripts
 
@@ -62,7 +87,7 @@ docker compose up -d
 
 ## Project Status
 - [x] Phase 1: Project Scaffolding
-- [ ] Phase 2: Monitoring & Dashboard
+- [x] Phase 2: Monitoring & Dashboard
 - [ ] Phase 3: Container Management
 - [ ] Phase 4: Marketplace & SSL
 - [ ] Phase 5: Security & Backup
