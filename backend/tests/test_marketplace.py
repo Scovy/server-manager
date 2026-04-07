@@ -205,7 +205,10 @@ async def test_marketplace_installed_list_and_remove(
         str(tmp_path),
     )
     monkeypatch.setattr("app.routers.marketplace.get_container_status", lambda _: "running")
-    monkeypatch.setattr("app.routers.marketplace.remove_deployed_app", lambda *_args, **_kwargs: "Application removed")
+    monkeypatch.setattr(
+        "app.routers.marketplace.remove_deployed_app",
+        lambda *_args, **_kwargs: "Application removed",
+    )
 
     with patch("app.services.marketplace_service.subprocess.run") as mock_run:
         mock_run.return_value.returncode = 0
