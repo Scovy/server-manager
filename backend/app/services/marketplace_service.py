@@ -8,6 +8,9 @@ import subprocess
 from pathlib import Path
 from typing import TypedDict
 
+import docker
+from docker.errors import APIError, NotFound
+
 from app.config import settings
 
 
@@ -244,6 +247,7 @@ def deploy_template(request: MarketplaceDeployRequest) -> MarketplaceDeployResul
         encoding="utf-8",
     )
 
+    output = ""
     try:
         proc = subprocess.run(
             ["docker", "compose", "-f", str(compose_path), "up", "-d"],
@@ -253,14 +257,18 @@ def deploy_template(request: MarketplaceDeployRequest) -> MarketplaceDeployResul
             timeout=180,
             check=False,
         )
+        if proc.returncode != 0:
+            stderr = proc.stderr.strip() or proc.stdout.strip() or "Unknown docker compose error"
+            raise ValueError(f"Deploy failed: {stderr}")
+        output = proc.stdout.strip() or "Deployment completed successfully"
     except OSError as exc:
-        raise ValueError(f"Failed to run docker compose: {exc}") from exc
+        # In containerized backend deployments the docker CLI binary may be absent.
+        # Fall back to Docker SDK over /var/run/docker.sock.
+        if exc.errno != 2:
+            raise ValueError(f"Failed to run docker compose: {exc}") from exc
+        output = _deploy_with_docker_sdk(template, app_name, host_port, env)
     except subprocess.TimeoutExpired as exc:
         raise ValueError("docker compose deploy timed out") from exc
-
-    if proc.returncode != 0:
-        stderr = proc.stderr.strip() or proc.stdout.strip() or "Unknown docker compose error"
-        raise ValueError(f"Deploy failed: {stderr}")
 
     return {
         "status": "ok",
@@ -269,5 +277,41 @@ def deploy_template(request: MarketplaceDeployRequest) -> MarketplaceDeployResul
         "host_port": host_port,
         "app_dir": str(app_dir),
         "compose_path": str(compose_path),
-        "output": proc.stdout.strip() or "Deployment completed successfully",
+        "output": output,
     }
+
+
+def _deploy_with_docker_sdk(
+    template: MarketplaceTemplate,
+    app_name: str,
+    host_port: int,
+    env: dict[str, str],
+) -> str:
+    """Deploy container directly with Docker SDK when docker CLI is unavailable."""
+    client = docker.from_env()
+    try:
+        try:
+            client.containers.get(app_name)
+            raise ValueError("Application with this name already exists")
+        except NotFound:
+            pass
+
+        port_key = f"{template['container_port']}/tcp"
+        container = client.containers.run(
+            template["image"],
+            name=app_name,
+            detach=True,
+            ports={port_key: host_port},
+            environment=env,
+            restart_policy={"Name": "unless-stopped"},
+            labels={
+                "com.homelab.managed": "true",
+                "com.homelab.template": template["id"],
+                "com.homelab.compose-project": app_name,
+            },
+        )
+        return f"Container started: {container.short_id}"
+    except APIError as exc:
+        raise ValueError(f"Deploy failed: {exc.explanation}") from exc
+    finally:
+        client.close()

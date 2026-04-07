@@ -128,3 +128,43 @@ async def test_marketplace_deploy_port_in_use(client: AsyncClient, tmp_path: str
 
     assert res.status_code == 400
     assert "port" in res.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_marketplace_deploy_falls_back_to_docker_sdk(
+    client: AsyncClient,
+    tmp_path: str,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "app.services.marketplace_service.settings.MARKETPLACE_APPS_DIR",
+        str(tmp_path),
+    )
+
+    with patch("app.services.marketplace_service.subprocess.run") as mock_run:
+        mock_run.side_effect = OSError(2, "No such file or directory")
+
+        with patch("app.services.marketplace_service.docker.from_env") as mock_from_env:
+            mock_client = mock_from_env.return_value
+            mock_client.containers.get.side_effect = Exception("not found")
+            mock_client.containers.run.return_value.short_id = "abc123"
+
+            # Simulate expected NotFound behavior for get(name)
+            from docker.errors import NotFound
+
+            mock_client.containers.get.side_effect = NotFound("not found")
+
+            res = await client.post(
+                "/api/marketplace/deploy",
+                json={
+                    "template_id": "gitea",
+                    "app_name": "sdk-fallback-demo",
+                    "host_port": 3011,
+                    "env": {},
+                },
+            )
+
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["status"] == "ok"
+    assert "container started" in payload["output"].lower()
