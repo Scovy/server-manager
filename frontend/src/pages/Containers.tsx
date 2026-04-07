@@ -48,7 +48,11 @@ export default function Containers() {
     try {
       const data = await fetchContainers(includeStopped);
       setContainers(data);
-      const nextId = nextSelectedId || selectedId || data[0]?.id || '';
+      const preferredId = nextSelectedId || selectedId;
+      const preferredExists = preferredId
+        ? data.some((container) => container.id === preferredId)
+        : false;
+      const nextId = preferredExists ? preferredId : data[0]?.id || '';
       setSelectedId(nextId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load containers');
@@ -74,7 +78,10 @@ export default function Containers() {
     }
 
     let cancelled = false;
+    let recoveredMissingContainer = false;
     setError('');
+    setMessage('');
+    setLogs('');
 
     const loadDetails = async () => {
       try {
@@ -107,7 +114,13 @@ export default function Containers() {
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to load container details');
+          const detail = err instanceof Error ? err.message : 'Failed to load container details';
+          setError(detail);
+          if (/not found|404/i.test(detail)) {
+            recoveredMissingContainer = true;
+            setMessage('Previously selected container no longer exists. Switched to an available one.');
+            void loadContainers('');
+          }
         }
       }
     };
@@ -122,6 +135,11 @@ export default function Containers() {
 
         if (typeof payload.error === 'string' && payload.error.length > 0) {
           setError(payload.error);
+          if (!recoveredMissingContainer && /not found|404/i.test(payload.error)) {
+            recoveredMissingContainer = true;
+            setMessage('Selected container disappeared. Switched to an available one.');
+            void loadContainers('');
+          }
           return;
         }
 
@@ -150,8 +168,14 @@ export default function Containers() {
         .then((nextStats) => {
           if (!cancelled) setStats(nextStats);
         })
-        .catch(() => {
-          // Ignore transient stats failures.
+        .catch((err) => {
+          if (cancelled || recoveredMissingContainer) return;
+          const detail = err instanceof Error ? err.message : '';
+          if (/not found|404/i.test(detail)) {
+            recoveredMissingContainer = true;
+            setMessage('Selected container disappeared. Switched to an available one.');
+            void loadContainers('');
+          }
         });
     }, 3000);
 
