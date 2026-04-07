@@ -1,4 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import CodeMirror from '@uiw/react-codemirror';
+import { yaml as yamlLang } from '@codemirror/lang-yaml';
+import { parseDocument } from 'yaml';
 import {
   fetchCompose,
   fetchContainer,
@@ -17,6 +20,54 @@ import './Containers.css';
 
 type ContainerAction = 'start' | 'stop' | 'restart' | 'kill';
 
+interface EnvRow {
+  id: string;
+  key: string;
+  value: string;
+  isSecret: boolean;
+  masked: boolean;
+}
+
+const SECRET_KEY_PATTERN = /(pass|secret|token|key|pwd|auth|credential|private)/i;
+
+function createRowId(): string {
+  return `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
+function isSecretKey(key: string): boolean {
+  return SECRET_KEY_PATTERN.test(key.trim());
+}
+
+function parseEnvRows(content: string): EnvRow[] {
+  return content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('#') && line.includes('='))
+    .map((line) => {
+      const index = line.indexOf('=');
+      const key = line.slice(0, index).trim();
+      const value = line.slice(index + 1);
+      const secret = isSecretKey(key);
+      return {
+        id: createRowId(),
+        key,
+        value,
+        isSecret: secret,
+        masked: secret,
+      };
+    });
+}
+
+function envRowsToText(rows: EnvRow[]): string {
+  if (rows.length === 0) {
+    return '';
+  }
+  const lines = rows
+    .map((row) => `${row.key.trim()}=${row.value}`)
+    .filter((line) => !line.startsWith('='));
+  return lines.join('\n') + '\n';
+}
+
 function statusBadgeClass(status: string): string {
   if (status === 'running') return 'badge-success';
   if (status === 'paused' || status === 'restarting') return 'badge-warning';
@@ -31,7 +82,7 @@ export default function Containers() {
   const [logs, setLogs] = useState<string>('');
   const [composeText, setComposeText] = useState<string>('');
   const [composePath, setComposePath] = useState<string>('');
-  const [envText, setEnvText] = useState<string>('');
+  const [envRows, setEnvRows] = useState<EnvRow[]>([]);
   const [includeStopped, setIncludeStopped] = useState<boolean>(true);
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
@@ -42,7 +93,7 @@ export default function Containers() {
     [containers],
   );
 
-  async function loadContainers(nextSelectedId?: string) {
+  const loadContainers = useCallback(async (nextSelectedId?: string) => {
     setLoading(true);
     setError('');
     try {
@@ -59,12 +110,11 @@ export default function Containers() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [includeStopped, selectedId]);
 
   useEffect(() => {
     void loadContainers();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [includeStopped]);
+  }, [loadContainers]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -73,7 +123,7 @@ export default function Containers() {
       setLogs('');
       setComposeText('');
       setComposePath('');
-      setEnvText('');
+      setEnvRows([]);
       return;
     }
 
@@ -108,9 +158,13 @@ export default function Containers() {
 
         try {
           const envPayload = await fetchEnvText(selectedId);
-          if (!cancelled) setEnvText(envPayload.content);
+          if (!cancelled) {
+            setEnvRows(parseEnvRows(envPayload.content));
+          }
         } catch {
-          if (!cancelled) setEnvText('# .env file not available for this container\n');
+          if (!cancelled) {
+            setEnvRows([]);
+          }
         }
       } catch (err) {
         if (!cancelled) {
@@ -184,7 +238,7 @@ export default function Containers() {
       source.close();
       window.clearInterval(statTimer);
     };
-  }, [selectedId]);
+  }, [selectedId, loadContainers]);
 
   async function onAction(action: ContainerAction) {
     if (!selectedId) return;
@@ -224,6 +278,10 @@ export default function Containers() {
     setMessage('');
     setError('');
     try {
+      const parsed = parseDocument(composeText);
+      if (parsed.errors.length > 0) {
+        throw new Error(`Invalid YAML: ${parsed.errors[0].message}`);
+      }
       await updateCompose(selectedId, composeText);
       setMessage('Compose file saved. Click Apply Changes to recreate services.');
     } catch (err) {
@@ -236,11 +294,49 @@ export default function Containers() {
     setMessage('');
     setError('');
     try {
-      await updateEnvText(selectedId, envText);
+      const nextEnvText = envRowsToText(envRows);
+      await updateEnvText(selectedId, nextEnvText);
       setMessage('.env file saved. Click Apply Changes to recreate services.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save env file');
     }
+  }
+
+  function updateEnvRow(id: string, field: 'key' | 'value', value: string) {
+    setEnvRows((prev) =>
+      prev.map((row) => {
+        if (row.id !== id) return row;
+        const nextKey = field === 'key' ? value : row.key;
+        const secret = isSecretKey(nextKey);
+        return {
+          ...row,
+          [field]: value,
+          isSecret: secret,
+          masked: secret ? row.masked : false,
+        };
+      }),
+    );
+  }
+
+  function addEnvRow() {
+    setEnvRows((prev) => [
+      ...prev,
+      {
+        id: createRowId(),
+        key: '',
+        value: '',
+        isSecret: false,
+        masked: false,
+      },
+    ]);
+  }
+
+  function removeEnvRow(id: string) {
+    setEnvRows((prev) => prev.filter((row) => row.id !== id));
+  }
+
+  function toggleEnvMask(id: string) {
+    setEnvRows((prev) => prev.map((row) => (row.id === id ? { ...row, masked: !row.masked } : row)));
   }
 
   async function onApplyChanges() {
@@ -356,10 +452,12 @@ export default function Containers() {
                 <div>
                   <h3>Compose</h3>
                   <p className="containers-detail__path">{composePath}</p>
-                  <textarea
-                    className="input containers-editor"
+                  <CodeMirror
+                    className="containers-editor-cm"
                     value={composeText}
-                    onChange={(e) => setComposeText(e.target.value)}
+                    extensions={[yamlLang()]}
+                    minHeight="220px"
+                    onChange={(value) => setComposeText(value)}
                   />
                   <button className="btn btn-secondary" onClick={() => void onSaveCompose()}>
                     Save Compose
@@ -369,11 +467,44 @@ export default function Containers() {
 
               <div>
                 <h3>.env</h3>
-                <textarea
-                  className="input containers-editor"
-                  value={envText}
-                  onChange={(e) => setEnvText(e.target.value)}
-                />
+                <div className="containers-env-table">
+                  <div className="containers-env-table__head">
+                    <span>Key</span>
+                    <span>Value</span>
+                    <span>Actions</span>
+                  </div>
+                  {envRows.length === 0 ? <p className="containers-env-table__empty">No variables found.</p> : null}
+                  {envRows.map((row) => (
+                    <div className="containers-env-table__row" key={row.id}>
+                      <input
+                        className="input"
+                        value={row.key}
+                        onChange={(e) => updateEnvRow(row.id, 'key', e.target.value)}
+                        placeholder="ENV_KEY"
+                      />
+                      <input
+                        className="input"
+                        type={row.isSecret && row.masked ? 'password' : 'text'}
+                        value={row.value}
+                        onChange={(e) => updateEnvRow(row.id, 'value', e.target.value)}
+                        placeholder="value"
+                      />
+                      <div className="containers-env-table__actions">
+                        {row.isSecret ? (
+                          <button className="btn btn-secondary" onClick={() => toggleEnvMask(row.id)}>
+                            {row.masked ? 'Show' : 'Hide'}
+                          </button>
+                        ) : null}
+                        <button className="btn btn-danger" onClick={() => removeEnvRow(row.id)}>
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <button className="btn btn-secondary" onClick={addEnvRow}>
+                  Add Variable
+                </button>
                 <button className="btn btn-secondary" onClick={() => void onSaveEnv()}>
                   Save .env
                 </button>
