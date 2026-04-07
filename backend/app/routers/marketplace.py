@@ -5,11 +5,15 @@ Provides template catalog endpoints used by the frontend marketplace page.
 
 from __future__ import annotations
 
-from typing import Any, NoReturn
+from typing import NoReturn
 
 from fastapi import APIRouter, HTTPException, Query
 
-from app.services.marketplace_service import get_template, list_templates
+from app.services.marketplace_service import (
+    MarketplaceTemplate,
+    get_template,
+    list_templates,
+)
 
 router = APIRouter(prefix="/api/marketplace", tags=["marketplace"])
 
@@ -25,13 +29,13 @@ def _handle_marketplace_error(exc: ValueError) -> NoReturn:
 def list_marketplace_templates(
     category: str | None = Query(None, description="Filter templates by category"),
     search: str | None = Query(None, description="Search by name, id, or description"),
-) -> list[dict[str, Any]]:
+) -> list[MarketplaceTemplate]:
     """Return marketplace template catalog."""
     return list_templates(category=category, search=search)
 
 
 @router.get("/{template_id}")
-def get_marketplace_template(template_id: str) -> dict[str, Any]:
+def get_marketplace_template(template_id: str) -> MarketplaceTemplate:
     """Return template metadata for one marketplace item."""
     try:
         return get_template(template_id)
