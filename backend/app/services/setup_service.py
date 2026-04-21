@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import socket
@@ -81,6 +82,20 @@ def _normalize_domain(value: str) -> str:
     return domain
 
 
+def _is_local_or_ip_target(domain: str) -> bool:
+    if not domain:
+        return False
+
+    if domain in {"localhost"}:
+        return True
+
+    try:
+        ipaddress.ip_address(domain)
+        return True
+    except ValueError:
+        return domain.endswith((".localhost", ".local", ".internal", ".home.arpa"))
+
+
 def _check_bindable(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -127,13 +142,32 @@ def run_preflight(payload: SetupPayload) -> SetupPreflightResult:
     checks: list[SetupCheck] = []
 
     domain = _normalize_domain(payload.domain)
+    local_https_target = _is_local_or_ip_target(domain)
 
     if payload.enable_https:
-        if not domain or domain in {"localhost", "127.0.0.1"}:
+        if not domain:
             errors.append(
                 SetupIssue(
                     code="invalid_domain",
-                    message="HTTPS requires a public domain name (not localhost).",
+                    message="Domain cannot be empty when HTTPS is enabled.",
+                    field="domain",
+                )
+            )
+        elif local_https_target:
+            checks.append(
+                SetupCheck(
+                    "domain_format",
+                    "pass",
+                    "Local/IP HTTPS target detected. Caddy will use local certificates.",
+                )
+            )
+            warnings.append(
+                SetupIssue(
+                    code="local_cert_untrusted",
+                    message=(
+                        "Local HTTPS certificates are not publicly trusted. "
+                        "Trust Caddy's local CA on client devices to remove browser warnings."
+                    ),
                     field="domain",
                 )
             )
@@ -217,7 +251,15 @@ def run_preflight(payload: SetupPayload) -> SetupPreflightResult:
             )
             checks.append(SetupCheck(label, "fail", f"{env_path} is not writable."))
 
-    if payload.enable_https and not payload.use_staging_acme:
+    if payload.enable_https and local_https_target:
+        checks.append(
+            SetupCheck(
+                "dns_lookup",
+                "pass",
+                "Skipped public DNS check for local/IP HTTPS target.",
+            )
+        )
+    elif payload.enable_https and not payload.use_staging_acme:
         try:
             socket.getaddrinfo(domain, 443)
             checks.append(SetupCheck("dns_lookup", "pass", "Domain resolves via DNS."))

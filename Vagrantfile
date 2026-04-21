@@ -8,9 +8,9 @@
 ENV['VAGRANT_DEFAULT_PROVIDER'] = 'virtualbox'
 
 Vagrant.configure("2") do |config|
-  # We are using bento/ubuntu-24.04 because the 'bento' project (by Chef)
+  # We are using bento/ubuntu-22.04 because the 'bento' project (by Chef)
   # meticulously builds 'libvirt' provider images for all releases.
-  config.vm.box = "bento/ubuntu-24.04"
+  config.vm.box = "bento/ubuntu-22.04"
   
   # Use rsync to sync folders when running from WSL to Windows VirtualBox
   config.vm.synced_folder ".", "/vagrant", type: "rsync",

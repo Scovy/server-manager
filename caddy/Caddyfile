@@ -9,9 +9,10 @@
 # Homelab Dashboard — Caddy Reverse Proxy Configuration
 
 # Examples:
-# - SITE_ADDRESS=http://192.168.56.10 (local IP, HTTP)
+# - SITE_ADDRESS=192.168.56.10 (local IP, HTTPS with Caddy local CA)
+# - SITE_ADDRESS=http://192.168.56.10 (local IP, HTTP only)
 # - SITE_ADDRESS=home.example.com (public DNS, automatic HTTPS)
-{$SITE_ADDRESS::80} {
+{$SITE_ADDRESS:localhost,127.0.0.1,192.168.56.10} {
     # Forward API requests to backend
     handle /api/* {
         reverse_proxy backend:8000

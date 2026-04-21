@@ -25,7 +25,7 @@ async def test_setup_preflight_returns_validation_errors(client: AsyncClient, mo
     res = await client.post(
         "/api/setup/preflight",
         json={
-            "domain": "localhost",
+            "domain": "bad_domain",
             "acme_email": "bad-email",
             "enable_https": True,
             "use_staging_acme": False,
@@ -38,6 +38,36 @@ async def test_setup_preflight_returns_validation_errors(client: AsyncClient, mo
     assert payload["valid"] is False
     assert any(issue["code"] == "invalid_domain" for issue in payload["errors"])
     assert any(issue["code"] == "invalid_email" for issue in payload["errors"])
+
+
+@pytest.mark.asyncio
+async def test_setup_preflight_allows_local_https_with_warning(client: AsyncClient, monkeypatch):
+    class DockerClientMock:
+        def ping(self):
+            return True
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("app.services.setup_service.docker.from_env", lambda: DockerClientMock())
+
+    res = await client.post(
+        "/api/setup/preflight",
+        json={
+            "domain": "127.0.0.1",
+            "acme_email": "admin@example.com",
+            "enable_https": True,
+            "use_staging_acme": False,
+            "cors_origins": ["https://127.0.0.1"],
+        },
+    )
+
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["valid"] is True
+    assert payload["errors"] == []
+    assert any(issue["code"] == "local_cert_untrusted" for issue in payload["warnings"])
+    assert any(check["name"] == "dns_lookup" and check["status"] == "pass" for check in payload["checks"])
 
 
 @pytest.mark.asyncio

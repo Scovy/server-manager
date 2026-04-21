@@ -9,7 +9,7 @@ services:
     container_name: homelab_backend
     restart: unless-stopped
     env_file:
-      - .env
+      - ./backend/.env
     volumes:
       - backend_data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -47,7 +47,7 @@ services:
     env_file:
       - .env
     environment:
-      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost,127.0.0.1,192.168.56.10}
       ACME_EMAIL: ${ACME_EMAIL:-admin@example.com}
       ACME_CA: ${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
     ports:

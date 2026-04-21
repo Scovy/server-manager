@@ -69,6 +69,7 @@ docker compose up -d
 
 Notes:
 - For certificate dry-runs, set `ACME_CA=https://acme-staging-v02.api.letsencrypt.org/directory`.
+- For local HTTPS, set `SITE_ADDRESS=192.168.56.10` (or `SITE_ADDRESS=localhost`) and trust Caddy's local CA on your client.
 - For local testing without TLS, set `SITE_ADDRESS=http://192.168.56.10` (or `http://localhost`).
 
 ## Available Scripts

@@ -26,7 +26,7 @@ export default function SetupWizard({ onInitialized }: SetupWizardProps) {
   const initialDomain = window.location.hostname || 'localhost';
   const [domain, setDomain] = useState(initialDomain);
   const [acmeEmail, setAcmeEmail] = useState('');
-  const [enableHttps, setEnableHttps] = useState(!isIpOrLocalDomain(initialDomain));
+  const [enableHttps, setEnableHttps] = useState(true);
   const [useStaging, setUseStaging] = useState(false);
   const [corsOrigins, setCorsOrigins] = useState('http://localhost:5173,http://localhost:3000');
   const [preflight, setPreflight] = useState<SetupPreflightResult>(defaultPreflight);
@@ -97,8 +97,8 @@ export default function SetupWizard({ onInitialized }: SetupWizardProps) {
         {message ? <div className="setup-notice setup-notice--success">{message}</div> : null}
         {localDomain ? (
           <div className="setup-notice setup-notice--warn">
-            Local/IP address detected. Trusted TLS certificates require a real domain. For IP access,
-            use HTTP mode or provide a public domain and DNS record.
+            Local/IP address detected. HTTPS will use Caddy&apos;s local certificate authority.
+            Browser warnings are expected until that local CA is trusted on your client device.
           </div>
         ) : null}
 
