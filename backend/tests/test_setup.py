@@ -67,7 +67,10 @@ async def test_setup_preflight_allows_local_https_with_warning(client: AsyncClie
     assert payload["valid"] is True
     assert payload["errors"] == []
     assert any(issue["code"] == "local_cert_untrusted" for issue in payload["warnings"])
-    assert any(check["name"] == "dns_lookup" and check["status"] == "pass" for check in payload["checks"])
+    assert any(
+        check["name"] == "dns_lookup" and check["status"] == "pass"
+        for check in payload["checks"]
+    )
 
 
 @pytest.mark.asyncio
