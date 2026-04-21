@@ -10,7 +10,11 @@ services:
     restart: unless-stopped
     env_file:
       - ./backend/.env
+    environment:
+      SETUP_CONFIG_ROOT: /workspace
+      CADDY_CONTAINER_NAME: homelab_caddy
     volumes:
+      - ./:/workspace
       - backend_data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
     ports:
@@ -44,20 +48,13 @@ services:
     image: caddy:2-alpine
     container_name: homelab_caddy
     restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      SITE_ADDRESS: ${SITE_ADDRESS:-localhost,127.0.0.1,192.168.56.10}
-      ACME_EMAIL: ${ACME_EMAIL:-admin@example.com}
-      ACME_CA: ${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
     ports:
       - "80:80"
       - "443:443"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./caddy/marketplace_apps.caddy:/etc/caddy/marketplace_apps.caddy
+      - ./caddy:/etc/caddy
       - caddy_data:/data
       - caddy_config:/config
     depends_on:

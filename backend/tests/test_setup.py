@@ -105,6 +105,7 @@ async def test_setup_initialize_writes_env_and_persists_state(
     assert res.status_code == 200
     payload = res.json()
     assert payload["status"] == "ok"
+    assert payload["handover"]["target_url"] == "https://home.example.com"
 
     status_res = await client.get("/api/setup/status")
     assert status_res.status_code == 200
@@ -119,3 +120,10 @@ async def test_setup_initialize_writes_env_and_persists_state(
     assert "acme-staging-v02.api.letsencrypt.org" in root_env
     assert "DOMAIN=https://home.example.com" in backend_env
     assert "CORS_ORIGINS=https://home.example.com" in backend_env
+
+    globals_caddy = (tmp_path / "caddy" / "generated_globals.caddy").read_text(encoding="utf-8")
+    site_caddy = (tmp_path / "caddy" / "generated_site.caddy").read_text(encoding="utf-8")
+
+    assert "email admin@example.com" in globals_caddy
+    assert "acme-staging-v02.api.letsencrypt.org/directory" in globals_caddy
+    assert "home.example.com {" in site_caddy

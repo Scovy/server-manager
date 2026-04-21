@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import docker
-from docker.errors import DockerException
+from docker.errors import DockerException, NotFound
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -57,7 +57,23 @@ class SetupPayload:
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    explicit_root = os.getenv("SETUP_CONFIG_ROOT", "").strip()
+    if explicit_root:
+        return Path(explicit_root).expanduser().resolve()
+
+    candidates = [
+        Path(__file__).resolve().parents[3],
+        Path.cwd(),
+        Path("/workspace"),
+        Path("/vagrant"),
+    ]
+    markers = ("docker-compose.prod.yml", "docker-compose.yml", ".env.example", "caddy")
+
+    for candidate in candidates:
+        if candidate.exists() and all((candidate / marker).exists() for marker in markers):
+            return candidate
+
+    return candidates[0]
 
 
 def _resolve_env_paths() -> tuple[Path, Path]:
@@ -126,6 +142,79 @@ def _upsert_env_value(env_path: Path, key: str, value: str) -> None:
 
     env_path.parent.mkdir(parents=True, exist_ok=True)
     env_path.write_text("\n".join(updated_lines).rstrip() + "\n", encoding="utf-8")
+
+
+def _render_caddy_globals(acme_email: str, acme_ca: str) -> str:
+    return "\n".join(
+        [
+            "{",
+            f"    email {acme_email}",
+            f"    acme_ca {acme_ca}",
+            "}",
+            "",
+        ]
+    )
+
+
+def _render_caddy_site(domain: str, https_enabled: bool) -> str:
+    site_address = domain if https_enabled else f"http://{domain}"
+    return "\n".join(
+        [
+            f"{site_address} {{",
+            "    handle /api/* {",
+            "        reverse_proxy backend:8000",
+            "    }",
+            "",
+            "    handle /ws/* {",
+            "        reverse_proxy backend:8000",
+            "    }",
+            "",
+            "    handle {",
+            "        reverse_proxy frontend:3000",
+            "    }",
+            "",
+            "    encode gzip zstd",
+            "}",
+            "",
+        ]
+    )
+
+
+def _write_caddy_runtime_config(
+    root: Path,
+    *,
+    domain: str,
+    acme_email: str,
+    acme_ca: str,
+    https_enabled: bool,
+) -> None:
+    caddy_dir = root / "caddy"
+    globals_path = caddy_dir / "generated_globals.caddy"
+    site_path = caddy_dir / "generated_site.caddy"
+
+    caddy_dir.mkdir(parents=True, exist_ok=True)
+    globals_path.write_text(_render_caddy_globals(acme_email.strip(), acme_ca), encoding="utf-8")
+    site_path.write_text(
+        _render_caddy_site(domain=domain, https_enabled=https_enabled),
+        encoding="utf-8",
+    )
+
+
+def _restart_caddy_container() -> tuple[str, str]:
+    container_name = os.getenv("CADDY_CONTAINER_NAME", "homelab_caddy").strip() or "homelab_caddy"
+    client = docker.from_env()
+    try:
+        container = client.containers.get(container_name)
+        container.restart(timeout=20)
+        return ("applied", f"Reloaded container {container_name} with updated domain/SSL config.")
+    except NotFound:
+        return ("skipped", f"Caddy container '{container_name}' was not found. Config saved only.")
+    except DockerException as exc:
+        return ("warning", f"Config saved, but Caddy reload failed: {exc}")
+    except Exception as exc:  # pragma: no cover - defensive guard for runtime env mismatches
+        return ("warning", f"Config saved, but Caddy reload could not be completed: {exc}")
+    finally:
+        client.close()
 
 
 async def get_setup_status(db: AsyncSession) -> dict[str, object]:
@@ -307,10 +396,18 @@ async def initialize_setup(db: AsyncSession, payload: SetupPayload) -> dict[str,
     _upsert_env_value(root_env, "ACME_CA", acme_ca)
     site_address = domain if https_enabled else f"http://{domain}"
     _upsert_env_value(root_env, "SITE_ADDRESS", site_address)
+    _write_caddy_runtime_config(
+        _repo_root(),
+        domain=domain,
+        acme_email=payload.acme_email.strip(),
+        acme_ca=acme_ca,
+        https_enabled=https_enabled,
+    )
 
     backend_domain = f"{'https' if https_enabled else 'http'}://{domain}"
     _upsert_env_value(backend_env, "DOMAIN", backend_domain)
     _upsert_env_value(backend_env, "CORS_ORIGINS", ",".join(payload.cors_origins))
+    handover_status, handover_message = _restart_caddy_container()
 
     values = {
         SETUP_INITIALIZED_KEY: "true",
@@ -332,7 +429,12 @@ async def initialize_setup(db: AsyncSession, payload: SetupPayload) -> dict[str,
 
     return {
         "status": "ok",
-        "message": "Initial setup completed.",
+        "message": "Initial setup completed and configuration handover executed.",
+        "handover": {
+            "status": handover_status,
+            "message": handover_message,
+            "target_url": backend_domain,
+        },
         "preflight": _serialize_preflight(result),
     }
 
