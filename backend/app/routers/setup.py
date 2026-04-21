@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.services.setup_service import (
     SetupPayload,
+    apply_runtime_handover,
     get_setup_status,
     initialize_setup,
     run_preflight,
@@ -60,6 +61,7 @@ async def setup_preflight(request: SetupRequest) -> dict[str, object]:
 @router.post("/initialize")
 async def setup_initialize(
     request: SetupRequest,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, object]:
     """Apply setup configuration, persist initialization state, and write env values."""
@@ -67,4 +69,5 @@ async def setup_initialize(
     result = await initialize_setup(db, payload)
     if result["status"] != "ok":
         raise HTTPException(status_code=400, detail=result)
+    background_tasks.add_task(apply_runtime_handover)
     return result

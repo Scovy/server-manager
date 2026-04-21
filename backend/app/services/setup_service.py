@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 import os
 import re
 import socket
@@ -18,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.setting import Setting
 
 SETUP_INITIALIZED_KEY = "setup_initialized"
+logger = logging.getLogger(__name__)
 
 DOMAIN_PATTERN = re.compile(
     r"^(?=.{1,253}$)(?!-)(?:[a-zA-Z0-9-]{1,63}\.)+[a-zA-Z]{2,63}$"
@@ -224,6 +226,17 @@ def _restart_caddy_container() -> tuple[str, str]:
         client.close()
 
 
+def apply_runtime_handover() -> None:
+    """Apply runtime handover by reloading Caddy after setup response is returned."""
+    status, message = _restart_caddy_container()
+    if status == "applied":
+        logger.info(message)
+    elif status == "skipped":
+        logger.warning(message)
+    else:
+        logger.error(message)
+
+
 async def get_setup_status(db: AsyncSession) -> dict[str, object]:
     row = await db.execute(select(Setting).where(Setting.key == SETUP_INITIALIZED_KEY))
     initialized = row.scalar_one_or_none()
@@ -414,7 +427,6 @@ async def initialize_setup(db: AsyncSession, payload: SetupPayload) -> dict[str,
     backend_domain = f"{'https' if https_enabled else 'http'}://{domain}"
     _upsert_env_value(backend_env, "DOMAIN", backend_domain)
     _upsert_env_value(backend_env, "CORS_ORIGINS", ",".join(payload.cors_origins))
-    handover_status, handover_message = _restart_caddy_container()
 
     values = {
         SETUP_INITIALIZED_KEY: "true",
@@ -436,10 +448,10 @@ async def initialize_setup(db: AsyncSession, payload: SetupPayload) -> dict[str,
 
     return {
         "status": "ok",
-        "message": "Initial setup completed and configuration handover executed.",
+        "message": "Initial setup completed. Runtime handover scheduled.",
         "handover": {
-            "status": handover_status,
-            "message": handover_message,
+            "status": "scheduled",
+            "message": "Caddy reload scheduled in background.",
             "target_url": backend_domain,
         },
         "preflight": _serialize_preflight(result),
