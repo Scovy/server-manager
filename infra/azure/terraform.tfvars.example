@@ -1,0 +1,15 @@
+subscription_id       = "00000000-0000-0000-0000-000000000000"
+location              = "westeurope"
+name_prefix           = "servermanager"
+admin_username        = "azureuser"
+admin_ssh_public_key  = "ssh-ed25519 AAAA... your-key"
+repo_url              = "https://github.com/scovy/server-manager.git"
+repo_branch           = "main"
+domain                = "scovy.vip"
+acme_email            = "you@example.com"
+bootstrap_site_address = ":80"
+
+tags = {
+  project = "server-manager"
+  env     = "prod"
+}

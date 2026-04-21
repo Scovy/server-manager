@@ -56,3 +56,11 @@ coverage.xml
 
 # Vagrant
 .vagrant
+
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+!**/terraform.tfvars.example

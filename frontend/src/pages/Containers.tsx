@@ -14,7 +14,9 @@ import {
   updateCompose,
   updateEnvText,
 } from '../api/containersApi';
+import { fetchInstalledApps } from '../api/marketplaceApi';
 import type { ContainerDetail, ContainerItem, ContainerStats } from '../types/containers';
+import type { InstalledApp } from '../types/marketplace';
 import ExecTerminal from '../components/ExecTerminal';
 import './Containers.css';
 
@@ -74,8 +76,17 @@ function statusBadgeClass(status: string): string {
   return 'badge-danger';
 }
 
-function resolveContainerUrl(container: ContainerDetail | null): string | null {
+function resolveContainerUrl(
+  container: ContainerDetail | null,
+  appUrlsByContainer: Record<string, string>,
+): string | null {
   if (!container) return null;
+
+  const normalizedName = container.name.startsWith('/') ? container.name.slice(1) : container.name;
+  const marketplaceUrl = appUrlsByContainer[normalizedName];
+  if (marketplaceUrl) {
+    return marketplaceUrl;
+  }
 
   const preferredContainerPorts = [80, 8080, 3000, 8096, 9000, 5000];
   const candidates: Array<{ containerPort: number; hostPort: number; hostIp: string }> = [];
@@ -132,6 +143,7 @@ export default function Containers() {
   const [composePath, setComposePath] = useState<string>('');
   const [envRows, setEnvRows] = useState<EnvRow[]>([]);
   const [includeStopped, setIncludeStopped] = useState<boolean>(true);
+  const [appUrlsByContainer, setAppUrlsByContainer] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
   const [message, setMessage] = useState<string>('');
@@ -140,7 +152,10 @@ export default function Containers() {
     () => [...containers].sort((a, b) => a.name.localeCompare(b.name)),
     [containers],
   );
-  const openAppUrl = useMemo(() => resolveContainerUrl(selected), [selected]);
+  const openAppUrl = useMemo(
+    () => resolveContainerUrl(selected, appUrlsByContainer),
+    [selected, appUrlsByContainer],
+  );
 
   const loadContainers = useCallback(async (nextSelectedId?: string) => {
     setLoading(true);
@@ -148,6 +163,19 @@ export default function Containers() {
     try {
       const data = await fetchContainers(includeStopped);
       setContainers(data);
+      try {
+        const installedApps = await fetchInstalledApps();
+        const nextMap = installedApps.reduce<Record<string, string>>((acc, app: InstalledApp) => {
+          if (app.app_url) {
+            acc[app.container_name] = app.app_url;
+            acc[app.app_name] = app.app_url;
+          }
+          return acc;
+        }, {});
+        setAppUrlsByContainer(nextMap);
+      } catch {
+        setAppUrlsByContainer({});
+      }
       const preferredId = nextSelectedId || selectedId;
       const preferredExists = preferredId
         ? data.some((container) => container.id === preferredId)

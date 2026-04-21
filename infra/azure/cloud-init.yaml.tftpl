@@ -1,0 +1,102 @@
+#cloud-config
+package_update: true
+package_upgrade: true
+
+write_files:
+  - path: /usr/local/bin/bootstrap-deploy.sh
+    permissions: '0755'
+    owner: root:root
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      export DEBIAN_FRONTEND=noninteractive
+
+      apt-get update
+      apt-get install -y ca-certificates curl gnupg lsb-release git
+
+      install -m 0755 -d /etc/apt/keyrings
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+      chmod a+r /etc/apt/keyrings/docker.asc
+
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+      $(. /etc/os-release && echo \"$VERSION_CODENAME\") stable" > /etc/apt/sources.list.d/docker.list
+
+      apt-get update
+      apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      usermod -aG docker ${admin_username}
+
+      mkdir -p /opt/server-manager
+      if [ -d /opt/server-manager/.git ]; then
+        git -C /opt/server-manager fetch --all
+        git -C /opt/server-manager checkout "${repo_branch}"
+        git -C /opt/server-manager pull --ff-only
+      elif [ -z "$(ls -A /opt/server-manager 2>/dev/null)" ]; then
+        git clone --branch "${repo_branch}" "${repo_url}" /opt/server-manager
+      else
+        git -C /opt/server-manager init
+        git -C /opt/server-manager remote remove origin 2>/dev/null || true
+        git -C /opt/server-manager remote add origin "${repo_url}"
+        git -C /opt/server-manager fetch --depth 1 origin "${repo_branch}"
+        git -C /opt/server-manager checkout -B "${repo_branch}" FETCH_HEAD
+      fi
+
+      cd /opt/server-manager
+
+      if [ ! -f .env ] && [ -f .env.example ]; then
+        cp .env.example .env
+      fi
+
+      if [ ! -f backend/.env ] && [ -f backend/.env.example ]; then
+        cp backend/.env.example backend/.env
+      fi
+
+      # Bootstrap with HTTP so setup wizard is always reachable first.
+      sed -i "s|^SITE_ADDRESS=.*|SITE_ADDRESS=${bootstrap_site_address}|" .env || true
+      sed -i "s|^DOMAIN=.*|DOMAIN=${domain}|" .env || true
+      sed -i "s|^ACME_EMAIL=.*|ACME_EMAIL=${acme_email}|" .env || true
+      sed -i "s|^ACME_CA=.*|ACME_CA=https://acme-v02.api.letsencrypt.org/directory|" .env || true
+
+      if ! grep -q '^SITE_ADDRESS=' .env; then echo "SITE_ADDRESS=${bootstrap_site_address}" >> .env; fi
+      if ! grep -q '^DOMAIN=' .env; then echo "DOMAIN=${domain}" >> .env; fi
+      if ! grep -q '^ACME_EMAIL=' .env; then echo "ACME_EMAIL=${acme_email}" >> .env; fi
+      if ! grep -q '^ACME_CA=' .env; then echo "ACME_CA=https://acme-v02.api.letsencrypt.org/directory" >> .env; fi
+
+      sed -i "s|^DATABASE_URL=.*|DATABASE_URL=sqlite+aiosqlite:///./data/homelab.db|" backend/.env || true
+      sed -i "s|^DOMAIN=.*|DOMAIN=http://${domain}|" backend/.env || true
+      sed -i "s|^CORS_ORIGINS=.*|CORS_ORIGINS=http://localhost:5173,http://localhost:3000|" backend/.env || true
+
+      if ! grep -q '^DATABASE_URL=' backend/.env; then echo 'DATABASE_URL=sqlite+aiosqlite:///./data/homelab.db' >> backend/.env; fi
+      if ! grep -q '^DOMAIN=' backend/.env; then echo "DOMAIN=http://${domain}" >> backend/.env; fi
+      if ! grep -q '^CORS_ORIGINS=' backend/.env; then echo 'CORS_ORIGINS=http://localhost:5173,http://localhost:3000' >> backend/.env; fi
+
+      mkdir -p caddy
+      cat > caddy/generated_globals.caddy <<CFG
+      {
+          email ${acme_email}
+          acme_ca https://acme-v02.api.letsencrypt.org/directory
+      }
+      CFG
+
+      cat > caddy/generated_site.caddy <<CFG
+      ${bootstrap_site_address} {
+          handle /api/* {
+              reverse_proxy backend:8000
+          }
+
+          handle /ws/* {
+              reverse_proxy backend:8000
+          }
+
+          handle {
+              reverse_proxy frontend:3000
+          }
+
+          encode gzip zstd
+      }
+      CFG
+
+      docker compose -f docker-compose.prod.yml up -d --build
+
+runcmd:
+  - [bash, /usr/local/bin/bootstrap-deploy.sh]

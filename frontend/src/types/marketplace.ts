@@ -45,6 +45,7 @@ export interface InstalledApp {
   app_name: string;
   container_name: string;
   host_port: number;
+  app_url: string;
   app_dir: string;
   compose_path: string;
   status: string;
