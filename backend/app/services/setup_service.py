@@ -158,6 +158,12 @@ def _render_caddy_globals(acme_email: str, acme_ca: str) -> str:
 
 def _render_caddy_site(domain: str, https_enabled: bool) -> str:
     site_address = domain if https_enabled else f"http://{domain}"
+    tls_lines: list[str] = []
+    if https_enabled and _is_local_or_ip_target(domain):
+        tls_lines = [
+            "",
+            "    tls internal",
+        ]
     return "\n".join(
         [
             f"{site_address} {{",
@@ -172,6 +178,7 @@ def _render_caddy_site(domain: str, https_enabled: bool) -> str:
             "    handle {",
             "        reverse_proxy frontend:3000",
             "    }",
+            *tls_lines,
             "",
             "    encode gzip zstd",
             "}",
