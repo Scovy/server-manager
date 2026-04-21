@@ -50,6 +50,6 @@ Vagrant.configure("2") do |config|
     vb.gui    = false # GUI is usually not needed for server-manager
   end
 
-  # The provisioning script that runs the FIRST time you type `vagrant up`
-  config.vm.provision "shell", path: "scripts/setup-vm.sh"
+  # Run provisioning on every `vagrant up` to auto-bootstrap missing env files.
+  config.vm.provision "shell", path: "scripts/setup-vm.sh", run: "always"
 end

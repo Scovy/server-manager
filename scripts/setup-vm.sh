@@ -40,6 +40,32 @@ retry_apt_update() {
   done
 }
 
+ensure_env_file() {
+  local env_path="$1"
+  local example_path="$2"
+  if [ ! -s "$env_path" ]; then
+    if [ -f "$example_path" ]; then
+      cp "$example_path" "$env_path"
+      echo "Created $env_path from $example_path"
+    else
+      touch "$env_path"
+      echo "Created empty $env_path"
+    fi
+  fi
+}
+
+ensure_env_key() {
+  local env_path="$1"
+  local key="$2"
+  local value="$3"
+
+  if grep -qE "^${key}=" "$env_path"; then
+    return 0
+  fi
+
+  echo "${key}=${value}" >> "$env_path"
+}
+
 # 1. Update and install prerequisites
 retry_apt_update
 apt-get install -y ca-certificates curl gnupg lsb-release
@@ -69,31 +95,20 @@ echo "==========================================="
 # 5. Navigate to the synced folder (which is the repository root)
 cd /vagrant
 
-# 6. Setup root .env (Caddy/TLS config) if it is missing or empty
-if [ ! -s .env ]; then
-  if [ -f .env.example ]; then
-    cp .env.example .env
-    sed -i 's|^SITE_ADDRESS=.*|SITE_ADDRESS=192.168.56.10|' .env
-    sed -i 's|^DOMAIN=.*|DOMAIN=192.168.56.10|' .env
-    sed -i 's|^ACME_EMAIL=.*|ACME_EMAIL=admin@example.com|' .env
-    echo "Created root .env from .env.example (local HTTPS enabled)"
-  else
-    echo "Warning: .env.example not found. Caddy TLS may not be configured."
-  fi
-fi
+# 6. Ensure root .env exists and has required Caddy/TLS keys.
+# Only missing keys are appended; existing values are preserved.
+ensure_env_file .env .env.example
+ensure_env_key .env SITE_ADDRESS 192.168.56.10
+ensure_env_key .env DOMAIN 192.168.56.10
+ensure_env_key .env ACME_EMAIL admin@example.com
+ensure_env_key .env ACME_CA https://acme-v02.api.letsencrypt.org/directory
 
-# 7. Setup backend/.env if it is missing or empty
-if [ ! -s backend/.env ]; then
-  if [ -f backend/.env.example ]; then
-    cp backend/.env.example backend/.env
-    sed -i 's|^DATABASE_URL=.*|DATABASE_URL=sqlite+aiosqlite:///./data/homelab.db|' backend/.env
-    sed -i 's|^DOMAIN=.*|DOMAIN=https://192.168.56.10|' backend/.env
-    sed -i 's|^CORS_ORIGINS=.*|CORS_ORIGINS=https://192.168.56.10,http://localhost:5173,http://localhost:3000|' backend/.env
-    echo "Created backend/.env from backend/.env.example"
-  else
-    echo "Warning: backend/.env.example not found. Backend might not start correctly."
-  fi
-fi
+# 7. Ensure backend/.env exists and has required backend keys.
+# Only missing keys are appended; existing values are preserved.
+ensure_env_file backend/.env backend/.env.example
+ensure_env_key backend/.env DATABASE_URL sqlite+aiosqlite:///./data/homelab.db
+ensure_env_key backend/.env DOMAIN https://192.168.56.10
+ensure_env_key backend/.env CORS_ORIGINS https://192.168.56.10,http://localhost:5173,http://localhost:3000
 
 # 8. Start the production stack!
 # Watchtower will be started as part of this stack, and it will pull the latest images from GHCR
