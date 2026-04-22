@@ -7,7 +7,14 @@ WORKDIR /app
 
 # Install dependencies
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci \
+    --no-audit \
+    --no-fund \
+    --prefer-offline \
+    --fetch-retries=5 \
+    --fetch-retry-mintimeout=20000 \
+    --fetch-retry-maxtimeout=120000
 
 # Copy source and build
 COPY . .
