@@ -89,7 +89,9 @@ def test_resolve_compose_file_maps_host_label_path_to_workspace_root(
     monkeypatch.setenv("SETUP_CONFIG_ROOT", str(tmp_path))
     container = _mock_container(
         {
-            "com.docker.compose.project.config_files": "/opt/server-manager/docker-compose.prod.yml",
+            "com.docker.compose.project.config_files": (
+                "/opt/server-manager/docker-compose.prod.yml"
+            ),
             "com.docker.compose.project.working_dir": "/opt/server-manager",
         }
     )
