@@ -7,6 +7,7 @@ reused by routers and unit-tested via mocking.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -15,11 +16,20 @@ from typing import Any, cast
 import docker
 from docker.errors import APIError, NotFound
 
+from app.config import settings
+
 
 class DockerService:
     """Service wrapper around Docker SDK operations used by container APIs."""
 
     PROTECTED_NETWORKS = {"bridge", "host", "none"}
+    _COMPOSE_FILENAMES = (
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        "docker-compose.prod.yml",
+        "compose.yml",
+        "compose.yaml",
+    )
 
     def __init__(self) -> None:
         self.client = docker.from_env()
@@ -414,27 +424,45 @@ class DockerService:
         working_dir = labels.get("com.docker.compose.project.working_dir")
 
         if config_files:
-            first = str(config_files).split(",")[0].strip()
-            candidate = Path(first)
-            if candidate.exists():
-                return candidate
-            if working_dir:
-                candidate = Path(working_dir) / first
+            for raw_path in str(config_files).split(","):
+                first = raw_path.strip()
+                if not first:
+                    continue
+
+                candidate = Path(first)
                 if candidate.exists():
                     return candidate
 
+                if working_dir and not candidate.is_absolute():
+                    from_working_dir = Path(working_dir) / candidate
+                    if from_working_dir.exists():
+                        return from_working_dir
+
+                for root in self._workspace_roots():
+                    mapped = root / candidate.name
+                    if mapped.exists():
+                        return mapped
+
         if working_dir:
-            default_candidates = [
-                "docker-compose.yml",
-                "docker-compose.yaml",
-                "docker-compose.prod.yml",
-                "compose.yml",
-                "compose.yaml",
-            ]
-            for name in default_candidates:
+            for name in self._COMPOSE_FILENAMES:
                 candidate = Path(working_dir) / name
                 if candidate.exists():
                     return candidate
+
+            for root in self._workspace_roots():
+                for name in self._COMPOSE_FILENAMES:
+                    candidate = root / name
+                    if candidate.exists():
+                        return candidate
+
+        if self._is_homelab_managed(labels):
+            project = self._homelab_project_name(container, labels)
+            for apps_root in self._marketplace_apps_roots():
+                app_dir = apps_root / project
+                for name in self._COMPOSE_FILENAMES:
+                    candidate = app_dir / name
+                    if candidate.exists():
+                        return candidate
 
         raise ValueError("Compose file not found for container. Ensure it is compose-managed.")
 
@@ -442,12 +470,78 @@ class DockerService:
         labels = container.attrs.get("Config", {}).get("Labels", {}) or {}
         working_dir = labels.get("com.docker.compose.project.working_dir")
         if not working_dir:
+            if self._is_homelab_managed(labels):
+                project = self._homelab_project_name(container, labels)
+                for apps_root in self._marketplace_apps_roots():
+                    env_path = apps_root / project / ".env"
+                    if env_path.exists():
+                        return env_path
             raise ValueError("Cannot resolve .env file path for this container")
 
         env_path = Path(working_dir) / ".env"
         if env_path.exists():
             return env_path
+
+        for root in self._workspace_roots():
+            mapped = root / ".env"
+            if mapped.exists():
+                return mapped
+
+        if self._is_homelab_managed(labels):
+            project = self._homelab_project_name(container, labels)
+            for apps_root in self._marketplace_apps_roots():
+                fallback_env = apps_root / project / ".env"
+                if fallback_env.exists():
+                    return fallback_env
+
         raise ValueError(".env file not found for compose project")
+
+    @staticmethod
+    def _is_homelab_managed(labels: dict[str, str]) -> bool:
+        return str(labels.get("com.homelab.managed", "")).lower() == "true"
+
+    @staticmethod
+    def _homelab_project_name(container: Any, labels: dict[str, str]) -> str:
+        project = str(labels.get("com.homelab.compose-project", "")).strip()
+        if project:
+            return project
+        return str(container.name)
+
+    def _workspace_roots(self) -> list[Path]:
+        raw_roots = [
+            os.getenv("SETUP_CONFIG_ROOT", "").strip(),
+            "/workspace",
+            str(Path.cwd()),
+        ]
+        seen: set[str] = set()
+        roots: list[Path] = []
+        for raw in raw_roots:
+            if not raw:
+                continue
+            path = Path(raw).expanduser()
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            roots.append(path)
+        return roots
+
+    def _marketplace_apps_roots(self) -> list[Path]:
+        configured = Path(settings.MARKETPLACE_APPS_DIR).expanduser()
+
+        roots: list[Path] = [configured]
+        for workspace_root in self._workspace_roots():
+            roots.append(workspace_root / "apps")
+
+        seen: set[str] = set()
+        deduped: list[Path] = []
+        for root in roots:
+            key = str(root)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(root)
+        return deduped
 
     @staticmethod
     def _calc_container_cpu(stats: dict[str, Any]) -> float:
