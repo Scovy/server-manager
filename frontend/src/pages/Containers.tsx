@@ -541,6 +541,7 @@ export default function Containers() {
                     className="containers-editor-cm"
                     value={composeText}
                     extensions={[yamlLang()]}
+                    theme="dark"
                     minHeight="220px"
                     onChange={(value) => setComposeText(value)}
                   />

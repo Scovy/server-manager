@@ -175,6 +175,32 @@
   min-height: 220px;
   font-family: var(--font-mono);
   font-size: var(--text-xs);
+  background: #0d1321;
+  color: #e8eefc;
+}
+
+.containers-editor-cm .cm-scroller {
+  font-family: var(--font-mono);
+}
+
+.containers-editor-cm .cm-gutters {
+  background: #111a2b;
+  color: #8fa3c7;
+  border-right: 1px solid #22324b;
+}
+
+.containers-editor-cm .cm-activeLine,
+.containers-editor-cm .cm-activeLineGutter {
+  background: rgba(99, 102, 241, 0.16);
+}
+
+.containers-editor-cm .cm-cursor {
+  border-left-color: #aab8ff;
+}
+
+.containers-editor-cm .cm-selectionBackground,
+.containers-editor-cm .cm-content ::selection {
+  background: rgba(129, 140, 248, 0.3);
 }
 
 .containers-env-table {
