@@ -88,6 +88,45 @@ async def test_marketplace_deploy_success(client: AsyncClient, tmp_path: str, mo
 
 
 @pytest.mark.asyncio
+async def test_marketplace_deploy_with_named_volume_writes_compose(
+    client: AsyncClient,
+    tmp_path: str,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "app.services.marketplace_service.settings.MARKETPLACE_APPS_DIR",
+        str(tmp_path),
+    )
+    monkeypatch.setattr(
+        "app.routers.marketplace.sync_caddy_marketplace_routes",
+        lambda *_args, **_kwargs: "ok",
+    )
+
+    with patch("app.services.marketplace_service.subprocess.run") as mock_run:
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = "deployed"
+        mock_run.return_value.stderr = ""
+
+        res = await client.post(
+            "/api/marketplace/deploy",
+            json={
+                "template_id": "gitea",
+                "app_name": "gitea-storage-demo",
+                "host_port": 3013,
+                "env": {},
+                "volumes": [{"name": "gitea-data", "mount_path": "/data"}],
+            },
+        )
+
+    assert res.status_code == 200
+    compose = (tmp_path / "gitea-storage-demo" / "docker-compose.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "volumes:" in compose
+    assert '"gitea-data:/data"' in compose
+
+
+@pytest.mark.asyncio
 async def test_marketplace_deploy_duplicate_app_name(
     client: AsyncClient,
     tmp_path: str,
@@ -201,6 +240,24 @@ async def test_marketplace_preflight_rejects_invalid_payload(
     assert any("template" in err.lower() for err in payload["errors"])
     assert any("app name" in err.lower() for err in payload["errors"])
     assert any("port" in err.lower() for err in payload["errors"])
+
+
+@pytest.mark.asyncio
+async def test_marketplace_preflight_rejects_invalid_volume_spec(client: AsyncClient):
+    res = await client.post(
+        "/api/marketplace/preflight",
+        json={
+            "template_id": "gitea",
+            "app_name": "gitea-valid",
+            "host_port": 3014,
+            "volumes": [{"name": "bad volume", "mount_path": "data"}],
+        },
+    )
+
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["valid"] is False
+    assert any("volume" in err.lower() for err in payload["errors"])
 
 
 @pytest.mark.asyncio

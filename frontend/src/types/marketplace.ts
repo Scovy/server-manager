@@ -16,6 +16,12 @@ export interface MarketplaceDeployRequest {
   app_name: string;
   host_port: number;
   env: Record<string, string>;
+  volumes: MarketplaceDeployVolume[];
+}
+
+export interface MarketplaceDeployVolume {
+  name: string;
+  mount_path: string;
 }
 
 export interface MarketplaceDeployResult {
@@ -32,6 +38,7 @@ export interface MarketplacePreflightRequest {
   template_id: string;
   app_name: string;
   host_port: number;
+  volumes: MarketplaceDeployVolume[];
 }
 
 export interface MarketplacePreflightResult {

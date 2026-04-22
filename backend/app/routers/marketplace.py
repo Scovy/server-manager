@@ -35,17 +35,24 @@ from app.services.marketplace_service import (
 router = APIRouter(prefix="/api/marketplace", tags=["marketplace"])
 
 
+class VolumeSpecPayload(BaseModel):
+    name: str = Field(min_length=2, max_length=128)
+    mount_path: str = Field(min_length=2, max_length=512)
+
+
 class DeployTemplatePayload(BaseModel):
     template_id: str = Field(min_length=1)
     app_name: str = Field(min_length=3, max_length=41)
     host_port: int = Field(ge=1, le=65535)
     env: dict[str, str] = Field(default_factory=dict)
+    volumes: list[VolumeSpecPayload] = Field(default_factory=list)
 
 
 class PreflightPayload(BaseModel):
     template_id: str = Field(min_length=1)
     app_name: str = Field(min_length=3, max_length=41)
     host_port: int = Field(ge=1, le=65535)
+    volumes: list[VolumeSpecPayload] = Field(default_factory=list)
 
 
 def _handle_marketplace_error(exc: ValueError) -> NoReturn:
@@ -87,6 +94,10 @@ async def deploy_marketplace_template(
         "app_name": payload.app_name,
         "host_port": payload.host_port,
         "env": payload.env,
+        "volumes": [
+            {"name": item.name, "mount_path": item.mount_path}
+            for item in payload.volumes
+        ],
     }
     try:
         result = deploy_template(request)
@@ -129,6 +140,10 @@ async def preflight_marketplace_deploy(
         "template_id": payload.template_id,
         "app_name": payload.app_name,
         "host_port": payload.host_port,
+        "volumes": [
+            {"name": item.name, "mount_path": item.mount_path}
+            for item in payload.volumes
+        ],
     }
     return preflight_deploy(request, existing_names)
 

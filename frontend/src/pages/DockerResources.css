@@ -50,6 +50,12 @@
   gap: var(--space-md);
 }
 
+.docker-resource-create {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  gap: var(--space-sm);
+}
+
 .docker-resource-table-wrap {
   overflow-x: auto;
 }
@@ -57,6 +63,7 @@
 .docker-resource-table {
   width: 100%;
   border-collapse: collapse;
+  min-width: 720px;
 }
 
 .docker-resource-table th,
@@ -71,7 +78,17 @@
   font-size: var(--text-sm);
 }
 
+.docker-resource-table td {
+  font-size: var(--text-sm);
+}
+
 .docker-resource-empty {
   color: var(--color-text-muted);
   margin-top: var(--space-sm);
+}
+
+@media (max-width: 768px) {
+  .docker-resource-create {
+    grid-template-columns: 1fr;
+  }
 }

@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, cast
 
 import docker
+import psutil
 from docker.errors import APIError, NotFound
 
 from app.config import settings
@@ -30,6 +32,7 @@ class DockerService:
         "compose.yml",
         "compose.yaml",
     )
+    _VOLUME_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{1,127}$")
 
     def __init__(self) -> None:
         self.client = docker.from_env()
@@ -321,18 +324,63 @@ class DockerService:
     def list_volumes(self) -> list[dict[str, Any]]:
         """List docker volumes with useful metadata for the UI."""
         volumes = self.client.volumes.list()
-        return [
-            {
-                "name": volume.name,
-                "driver": volume.attrs.get("Driver", ""),
-                "mountpoint": volume.attrs.get("Mountpoint", ""),
-                "scope": volume.attrs.get("Scope", ""),
-                "labels": volume.attrs.get("Labels") or {},
-                "ref_count": int((volume.attrs.get("UsageData") or {}).get("RefCount", 0)),
-                "in_use": int((volume.attrs.get("UsageData") or {}).get("RefCount", 0)) > 0,
-            }
-            for volume in volumes
-        ]
+        return [self._serialize_volume(volume) for volume in volumes]
+
+    def create_volume(
+        self,
+        volume_name: str,
+        labels: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Create a named docker volume.
+
+        Raises:
+            ValueError: If name is invalid or volume already exists.
+        """
+        candidate = volume_name.strip()
+        if not self._VOLUME_NAME_PATTERN.fullmatch(candidate):
+            raise ValueError(
+                "Volume name must be 2-128 chars and contain only letters, numbers, ., _, -"
+            )
+
+        try:
+            self.client.volumes.get(candidate)
+            raise ValueError("Volume already exists")
+        except NotFound:
+            pass
+
+        try:
+            volume = self.client.volumes.create(name=candidate, labels=labels or {})
+        except APIError as exc:
+            raise ValueError(f"Docker API error: {exc.explanation}") from exc
+
+        return self._serialize_volume(volume)
+
+    def list_disks(self) -> list[dict[str, Any]]:
+        """List host disk partitions and usage statistics."""
+        partitions = psutil.disk_partitions(all=False)
+        rows: list[dict[str, Any]] = []
+        for part in partitions:
+            mountpoint = part.mountpoint
+            try:
+                usage = psutil.disk_usage(mountpoint)
+            except OSError:
+                continue
+
+            rows.append(
+                {
+                    "device": part.device,
+                    "mountpoint": mountpoint,
+                    "fstype": part.fstype,
+                    "opts": part.opts,
+                    "total_bytes": int(usage.total),
+                    "used_bytes": int(usage.used),
+                    "free_bytes": int(usage.free),
+                    "percent": float(usage.percent),
+                }
+            )
+
+        rows.sort(key=lambda row: str(row.get("mountpoint", "")))
+        return rows
 
     def remove_volume(self, volume_name: str) -> None:
         """Remove a docker volume by name."""
@@ -346,6 +394,22 @@ class DockerService:
             raise ValueError("Volume not found") from exc
         except APIError as exc:
             raise ValueError(f"Docker API error: {exc.explanation}") from exc
+
+    @staticmethod
+    def _serialize_volume(volume: Any) -> dict[str, Any]:
+        usage = volume.attrs.get("UsageData") or {}
+        ref_count = int(usage.get("RefCount", 0))
+        return {
+            "name": volume.name,
+            "driver": volume.attrs.get("Driver", ""),
+            "mountpoint": volume.attrs.get("Mountpoint", ""),
+            "scope": volume.attrs.get("Scope", ""),
+            "labels": volume.attrs.get("Labels") or {},
+            "created_at": volume.attrs.get("CreatedAt", ""),
+            "size_bytes": int(usage.get("Size", 0) or 0),
+            "ref_count": ref_count,
+            "in_use": ref_count > 0,
+        }
 
     def list_networks(self) -> list[dict[str, Any]]:
         """List docker networks with useful metadata for the UI."""

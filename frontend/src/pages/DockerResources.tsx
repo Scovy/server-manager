@@ -1,23 +1,47 @@
 import { useEffect, useState } from 'react';
 import {
+  createVolume,
+  fetchDisks,
   deleteNetwork,
   deleteVolume,
   fetchNetworks,
   fetchVolumes,
 } from '../api/dockerResourcesApi';
-import type { DockerNetwork, DockerVolume } from '../types/dockerResources';
+import type { DockerDisk, DockerNetwork, DockerVolume } from '../types/dockerResources';
 import './DockerResources.css';
+
+function formatBytes(bytes: number): string {
+  if (bytes <= 0) return '-';
+
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let size = bytes;
+  let index = 0;
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024;
+    index += 1;
+  }
+
+  const digits = size >= 100 ? 0 : size >= 10 ? 1 : 2;
+  return `${size.toFixed(digits)} ${units[index]}`;
+}
 
 export default function DockerResources() {
   const [volumes, setVolumes] = useState<DockerVolume[]>([]);
+  const [disks, setDisks] = useState<DockerDisk[]>([]);
   const [networks, setNetworks] = useState<DockerNetwork[]>([]);
+  const [newVolumeName, setNewVolumeName] = useState('');
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
 
   async function loadResources() {
     try {
-      const [volData, netData] = await Promise.all([fetchVolumes(), fetchNetworks()]);
+      const [volData, diskData, netData] = await Promise.all([
+        fetchVolumes(),
+        fetchDisks(),
+        fetchNetworks(),
+      ]);
       setVolumes(volData);
+      setDisks(diskData);
       setNetworks(netData);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load docker resources');
@@ -33,6 +57,28 @@ export default function DockerResources() {
       window.clearTimeout(timer);
     };
   }, []);
+
+  async function onCreateVolume() {
+    const candidate = newVolumeName.trim();
+    if (!candidate) {
+      setError('Volume name is required.');
+      return;
+    }
+
+    setError('');
+    setMessage('');
+    try {
+      await createVolume(candidate, {
+        'com.homelab.managed': 'true',
+        'com.homelab.scope': 'storage-panel',
+      });
+      setMessage(`Volume ${candidate} created.`);
+      setNewVolumeName('');
+      await loadResources();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create volume');
+    }
+  }
 
   async function onDeleteVolume(name: string) {
     if (!window.confirm(`Delete volume ${name}?`)) return;
@@ -64,8 +110,8 @@ export default function DockerResources() {
     <div className="docker-resources-page animate-fade-in">
       <div className="docker-resources-page__header">
         <div>
-          <h1 className="docker-resources-page__title">Docker Resources</h1>
-          <p className="docker-resources-page__subtitle">Manage volumes and networks</p>
+          <h1 className="docker-resources-page__title">Storage Panel</h1>
+          <p className="docker-resources-page__subtitle">Manage volumes, disks, and related resources</p>
         </div>
         <button className="btn btn-secondary" onClick={() => void loadResources()}>
           Refresh
@@ -78,13 +124,26 @@ export default function DockerResources() {
       <div className="docker-resources-grid">
         <section className="card docker-resource-card">
           <h2>Volumes</h2>
+          <div className="docker-resource-create">
+            <input
+              className="input"
+              value={newVolumeName}
+              onChange={(e) => setNewVolumeName(e.target.value)}
+              placeholder="Create volume (e.g. media_data)"
+            />
+            <button className="btn btn-primary" onClick={() => void onCreateVolume()}>
+              Create Volume
+            </button>
+          </div>
           <div className="docker-resource-table-wrap">
             <table className="docker-resource-table">
               <thead>
                 <tr>
                   <th>Name</th>
                   <th>Driver</th>
-                  <th>Scope</th>
+                  <th>References</th>
+                  <th>Size</th>
+                  <th>Mountpoint</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -93,7 +152,9 @@ export default function DockerResources() {
                   <tr key={volume.name}>
                     <td>{volume.name}</td>
                     <td>{volume.driver}</td>
-                    <td>{volume.scope}</td>
+                    <td>{volume.ref_count}</td>
+                    <td>{formatBytes(volume.size_bytes)}</td>
+                    <td>{volume.mountpoint || '-'}</td>
                     <td>
                       <button
                         className="btn btn-danger"
@@ -109,6 +170,39 @@ export default function DockerResources() {
               </tbody>
             </table>
             {volumes.length === 0 && <p className="docker-resource-empty">No volumes found.</p>}
+          </div>
+        </section>
+
+        <section className="card docker-resource-card">
+          <h2>Disks</h2>
+          <div className="docker-resource-table-wrap">
+            <table className="docker-resource-table">
+              <thead>
+                <tr>
+                  <th>Mountpoint</th>
+                  <th>Device</th>
+                  <th>Filesystem</th>
+                  <th>Used</th>
+                  <th>Total</th>
+                  <th>Free</th>
+                  <th>Usage</th>
+                </tr>
+              </thead>
+              <tbody>
+                {disks.map((disk) => (
+                  <tr key={`${disk.device}-${disk.mountpoint}`}>
+                    <td>{disk.mountpoint}</td>
+                    <td>{disk.device || '-'}</td>
+                    <td>{disk.fstype || '-'}</td>
+                    <td>{formatBytes(disk.used_bytes)}</td>
+                    <td>{formatBytes(disk.total_bytes)}</td>
+                    <td>{formatBytes(disk.free_bytes)}</td>
+                    <td>{disk.percent.toFixed(1)}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {disks.length === 0 && <p className="docker-resource-empty">No disk partitions found.</p>}
           </div>
         </section>
 

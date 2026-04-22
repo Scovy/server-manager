@@ -38,6 +38,67 @@ async def test_remove_volume_not_found(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_create_volume_success(client: AsyncClient):
+    with patch("app.routers.docker_resources.DockerService") as mock_service_cls:
+        service = mock_service_cls.return_value
+        service.create_volume.return_value = {
+            "name": "media_data",
+            "driver": "local",
+            "mountpoint": "/var/lib/docker/volumes/media_data/_data",
+            "scope": "local",
+            "labels": {"com.homelab.managed": "true"},
+            "created_at": "2026-04-22T12:00:00Z",
+            "size_bytes": 0,
+            "ref_count": 0,
+            "in_use": False,
+        }
+
+        res = await client.post(
+            "/api/volumes",
+            json={"name": "media_data", "labels": {"com.homelab.managed": "true"}},
+        )
+
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["status"] == "ok"
+    assert payload["volume"]["name"] == "media_data"
+
+
+@pytest.mark.asyncio
+async def test_create_volume_duplicate_name(client: AsyncClient):
+    with patch("app.routers.docker_resources.DockerService") as mock_service_cls:
+        service = mock_service_cls.return_value
+        service.create_volume.side_effect = ValueError("Volume already exists")
+
+        res = await client.post("/api/volumes", json={"name": "media_data", "labels": {}})
+
+    assert res.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_list_disks_success(client: AsyncClient):
+    with patch("app.routers.docker_resources.DockerService") as mock_service_cls:
+        service = mock_service_cls.return_value
+        service.list_disks.return_value = [
+            {
+                "device": "/dev/sda1",
+                "mountpoint": "/",
+                "fstype": "ext4",
+                "opts": "rw,relatime",
+                "total_bytes": 1000,
+                "used_bytes": 500,
+                "free_bytes": 500,
+                "percent": 50.0,
+            }
+        ]
+
+        res = await client.get("/api/disks")
+
+    assert res.status_code == 200
+    assert res.json()[0]["mountpoint"] == "/"
+
+
+@pytest.mark.asyncio
 async def test_list_networks_success(client: AsyncClient):
     with patch("app.routers.docker_resources.DockerService") as mock_service_cls:
         service = mock_service_cls.return_value

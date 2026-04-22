@@ -8,7 +8,11 @@ import {
   preflightMarketplaceTemplate,
   removeInstalledApp,
 } from '../api/marketplaceApi';
-import type { InstalledApp, MarketplaceTemplate } from '../types/marketplace';
+import type {
+  InstalledApp,
+  MarketplaceDeployVolume,
+  MarketplaceTemplate,
+} from '../types/marketplace';
 import './Marketplace.css';
 
 const categories = ['all', 'dev', 'media', 'monitoring', 'productivity', 'security'];
@@ -20,6 +24,7 @@ export default function Marketplace() {
   const [deployAppName, setDeployAppName] = useState('');
   const [deployHostPort, setDeployHostPort] = useState<string>('');
   const [deployEnvText, setDeployEnvText] = useState('');
+  const [deployVolumesText, setDeployVolumesText] = useState('');
   const [deployMessage, setDeployMessage] = useState('');
   const [deployError, setDeployError] = useState('');
   const [preflightErrors, setPreflightErrors] = useState<string[]>([]);
@@ -71,9 +76,40 @@ export default function Marketplace() {
     setDeployAppName(template.id);
     setDeployHostPort(String(template.default_port));
     setDeployEnvText(envMapToText(template.default_env));
+    setDeployVolumesText('');
     setDeployMessage('');
     setDeployError('');
     setPreflightErrors([]);
+  }
+
+  function parseVolumeText(text: string): MarketplaceDeployVolume[] {
+    const volumes: MarketplaceDeployVolume[] = [];
+    const lines = text.split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+
+      const separator = trimmed.indexOf(':');
+      if (separator <= 0) {
+        throw new Error(`Invalid volume line: ${trimmed}`);
+      }
+
+      const name = trimmed.slice(0, separator).trim();
+      const mountPath = trimmed.slice(separator + 1).trim();
+      if (!name || !mountPath) {
+        throw new Error(`Invalid volume line: ${trimmed}`);
+      }
+      if (!mountPath.startsWith('/')) {
+        throw new Error(`Volume mount path must be absolute: ${trimmed}`);
+      }
+
+      volumes.push({
+        name,
+        mount_path: mountPath,
+      });
+    }
+
+    return volumes;
   }
 
   async function submitDeploy(templateId: string) {
@@ -89,11 +125,13 @@ export default function Marketplace() {
 
     try {
       const env = parseEnvText(deployEnvText);
+      const volumes = parseVolumeText(deployVolumesText);
       setDeploying(true);
       const preflight = await preflightMarketplaceTemplate({
         template_id: templateId,
         app_name: deployAppName,
         host_port: hostPort,
+        volumes,
       });
       if (!preflight.valid) {
         setPreflightErrors(preflight.errors);
@@ -105,6 +143,7 @@ export default function Marketplace() {
         app_name: deployAppName,
         host_port: hostPort,
         env,
+        volumes,
       });
       setDeployMessage(`Deployed ${result.app_name} on port ${result.host_port}.`);
       setDeployTemplateId('');
@@ -274,6 +313,15 @@ export default function Marketplace() {
                     className="input marketplace-deploy__env"
                     value={deployEnvText}
                     onChange={(e) => setDeployEnvText(e.target.value)}
+                  />
+                </label>
+                <label>
+                  Volumes (VOLUME_NAME:/container/path)
+                  <textarea
+                    className="input marketplace-deploy__env"
+                    value={deployVolumesText}
+                    onChange={(e) => setDeployVolumesText(e.target.value)}
+                    placeholder="gitea_data:/data"
                   />
                 </label>
                 <div className="marketplace-deploy__actions">

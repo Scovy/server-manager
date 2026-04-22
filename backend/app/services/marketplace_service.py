@@ -39,6 +39,7 @@ class MarketplaceDeployRequest(TypedDict):
     app_name: str
     host_port: int
     env: dict[str, str]
+    volumes: list[MarketplaceVolumeSpec]
 
 
 class MarketplaceDeployResult(TypedDict):
@@ -60,6 +61,7 @@ class MarketplacePreflightRequest(TypedDict):
     template_id: str
     app_name: str
     host_port: int
+    volumes: list[MarketplaceVolumeSpec]
 
 
 class MarketplacePreflightResult(TypedDict):
@@ -69,8 +71,16 @@ class MarketplacePreflightResult(TypedDict):
     errors: list[str]
 
 
+class MarketplaceVolumeSpec(TypedDict):
+    """Named volume mount configuration for app deployment."""
+
+    name: str
+    mount_path: str
+
+
 APP_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{2,40}$")
 IPV4_PATTERN = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+VOLUME_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{1,127}$")
 
 
 _TEMPLATES: list[MarketplaceTemplate] = [
@@ -453,6 +463,7 @@ def _render_compose(
     app_name: str,
     host_port: int,
     env: dict[str, str],
+    volumes: list[MarketplaceVolumeSpec],
 ) -> str:
     lines = [
         "services:",
@@ -467,7 +478,45 @@ def _render_compose(
         lines.append("    environment:")
         for key, value in sorted(env.items()):
             lines.append(f"      {key}: \"{value}\"")
+
+    if volumes:
+        lines.append("    volumes:")
+        for item in volumes:
+            lines.append(f"      - \"{item['name']}:{item['mount_path']}\"")
+
+        lines.append("")
+        lines.append("volumes:")
+        for item in volumes:
+            lines.append(f"  {item['name']}:")
+            lines.append(f"    name: {item['name']}")
+
     return "\n".join(lines) + "\n"
+
+
+def _validate_volume_specs(volumes: list[MarketplaceVolumeSpec]) -> None:
+    names_seen: set[str] = set()
+    mount_paths_seen: set[str] = set()
+
+    for item in volumes:
+        name = item["name"].strip()
+        mount_path = item["mount_path"].strip()
+
+        if not VOLUME_NAME_PATTERN.fullmatch(name):
+            raise ValueError(
+                "Volume name must be 2-128 chars and contain only letters, numbers, ., _, -"
+            )
+
+        if not mount_path.startswith("/") or " " in mount_path:
+            raise ValueError("Volume mount path must be an absolute path without spaces")
+
+        lowered_name = name.lower()
+        if lowered_name in names_seen:
+            raise ValueError("Duplicate volume names are not allowed")
+        names_seen.add(lowered_name)
+
+        if mount_path in mount_paths_seen:
+            raise ValueError("Duplicate volume mount paths are not allowed")
+        mount_paths_seen.add(mount_path)
 
 
 def _validate_deploy_request(request: MarketplaceDeployRequest) -> None:
@@ -483,6 +532,8 @@ def _validate_deploy_request(request: MarketplaceDeployRequest) -> None:
     for key in request["env"]:
         if not key or "=" in key or " " in key:
             raise ValueError(f"Invalid env key: {key}")
+
+    _validate_volume_specs(request["volumes"])
 
 
 def preflight_deploy(
@@ -514,6 +565,11 @@ def preflight_deploy(
     elif not is_port_available(host_port):
         errors.append(f"Host port {host_port} is already in use")
 
+    try:
+        _validate_volume_specs(request["volumes"])
+    except ValueError as exc:
+        errors.append(str(exc))
+
     return {
         "valid": len(errors) == 0,
         "errors": errors,
@@ -531,6 +587,14 @@ def deploy_template(request: MarketplaceDeployRequest) -> MarketplaceDeployResul
     app_name = request["app_name"].strip()
     host_port = request["host_port"]
     env = {**template["default_env"], **request["env"]}
+    volumes: list[MarketplaceVolumeSpec] = []
+    for item in request["volumes"]:
+        volumes.append(
+            {
+                "name": item["name"].strip(),
+                "mount_path": item["mount_path"].strip(),
+            }
+        )
 
     apps_dir = Path(settings.MARKETPLACE_APPS_DIR).expanduser().resolve()
     app_dir = apps_dir / app_name
@@ -544,7 +608,7 @@ def deploy_template(request: MarketplaceDeployRequest) -> MarketplaceDeployResul
         raise ValueError(f"Host port {host_port} is already in use")
 
     app_dir.mkdir(parents=True, exist_ok=False)
-    compose_content = _render_compose(template, app_name, host_port, env)
+    compose_content = _render_compose(template, app_name, host_port, env, volumes)
     compose_path.write_text(compose_content, encoding="utf-8")
     env_path.write_text(
         "\n".join(f"{k}={v}" for k, v in sorted(env.items())) + ("\n" if env else ""),
@@ -570,7 +634,7 @@ def deploy_template(request: MarketplaceDeployRequest) -> MarketplaceDeployResul
         # Fall back to Docker SDK over /var/run/docker.sock.
         if exc.errno != 2:
             raise ValueError(f"Failed to run docker compose: {exc}") from exc
-        output = _deploy_with_docker_sdk(template, app_name, host_port, env)
+        output = _deploy_with_docker_sdk(template, app_name, host_port, env, volumes)
     except subprocess.TimeoutExpired as exc:
         raise ValueError("docker compose deploy timed out") from exc
 
@@ -686,6 +750,7 @@ def _deploy_with_docker_sdk(
     app_name: str,
     host_port: int,
     env: dict[str, str],
+    volumes: list[MarketplaceVolumeSpec],
 ) -> str:
     """Deploy container directly with Docker SDK when docker CLI is unavailable."""
     try:
@@ -700,6 +765,23 @@ def _deploy_with_docker_sdk(
         except NotFound:
             pass
 
+        labels = {
+            "com.homelab.managed": "true",
+            "com.homelab.template": template["id"],
+            "com.homelab.compose-project": app_name,
+        }
+
+        volume_mounts: dict[str, dict[str, str]] = {}
+        for item in volumes:
+            volume_name = item["name"].strip()
+            mount_path = item["mount_path"].strip()
+            try:
+                client.volumes.get(volume_name)
+            except NotFound:
+                client.volumes.create(name=volume_name, labels=labels)
+
+            volume_mounts[volume_name] = {"bind": mount_path, "mode": "rw"}
+
         port_key = f"{template['container_port']}/tcp"
         container = client.containers.run(
             template["image"],
@@ -707,12 +789,9 @@ def _deploy_with_docker_sdk(
             detach=True,
             ports={port_key: host_port},
             environment=env,
+            volumes=volume_mounts,
             restart_policy={"Name": "unless-stopped"},
-            labels={
-                "com.homelab.managed": "true",
-                "com.homelab.template": template["id"],
-                "com.homelab.compose-project": app_name,
-            },
+            labels=labels,
         )
         return f"Container started: {container.short_id}"
     except APIError as exc:
