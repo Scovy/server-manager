@@ -203,7 +203,10 @@ def _probe_route_ssl(host: str, https_enabled: bool, live_checks: bool) -> _Rout
             cert_days_remaining=None,
             cert_issuer=None,
             cert_subject=None,
-            check_message="Live SSL checks are disabled. Enable them to probe DNS and certificates.",
+            check_message=(
+                "Live SSL checks are disabled. "
+                "Enable them to probe DNS and certificates."
+            ),
         )
 
     dns_ok, resolved_ips, dns_message = _resolve_dns(host)
