@@ -22,6 +22,7 @@ import Dashboard from './pages/Dashboard';
 import Containers from './pages/Containers';
 import DockerResources from './pages/DockerResources';
 import Marketplace from './pages/Marketplace';
+import Domains from './pages/Domains';
 import SetupWizard from './pages/SetupWizard';
 
 const queryClient = new QueryClient({
@@ -112,7 +113,7 @@ function AppRoutes() {
             <Route path="/containers" element={<Containers />} />
             <Route path="/docker-resources" element={<DockerResources />} />
             <Route path="/marketplace" element={<Marketplace />} />
-            <Route path="/domains" element={<ComingSoon title="Domains & SSL" />} />
+            <Route path="/domains" element={<Domains />} />
             <Route path="/backup" element={<ComingSoon title="Backup & Restore" />} />
             <Route path="/security" element={<ComingSoon title="Security" />} />
             <Route path="/settings" element={<ComingSoon title="Settings" />} />
