@@ -8,7 +8,7 @@ import ssl
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Mapping
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -128,22 +128,22 @@ def _resolve_dns(host: str) -> tuple[bool, list[str], str]:
     except OSError as exc:
         return False, [], f"DNS lookup failed: {exc}"
 
-    addresses = sorted(
-        {
-            info[4][0]
-            for info in infos
-            if isinstance(info, tuple)
-            and len(info) >= 5
-            and isinstance(info[4], tuple)
-            and len(info[4]) >= 1
-        }
-    )
+    addresses_set: set[str] = set()
+    for info in infos:
+        sockaddr = info[4]
+        if len(sockaddr) < 1:
+            continue
+        address = sockaddr[0]
+        if isinstance(address, str):
+            addresses_set.add(address)
+
+    addresses = sorted(addresses_set)
     if not addresses:
         return False, [], "DNS lookup returned no IP addresses"
     return True, addresses, "DNS lookup succeeded"
 
 
-def _fetch_tls_certificate(host: str) -> tuple[dict[str, object] | None, str | None]:
+def _fetch_tls_certificate(host: str) -> tuple[Mapping[str, object] | None, str | None]:
     context = ssl.create_default_context()
     try:
         with socket.create_connection((host, 443), timeout=3.5) as raw_sock:
