@@ -33,6 +33,33 @@ class DockerService:
         "compose.yaml",
     )
     _VOLUME_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{1,127}$")
+    _ANONYMOUS_VOLUME_PATTERN = re.compile(r"^[a-f0-9]{32,64}$")
+    _IGNORED_DISK_FSTYPES = {
+        "autofs",
+        "cgroup",
+        "cgroup2",
+        "configfs",
+        "debugfs",
+        "devtmpfs",
+        "fusectl",
+        "mqueue",
+        "nsfs",
+        "overlay",
+        "proc",
+        "pstore",
+        "securityfs",
+        "squashfs",
+        "sysfs",
+        "tmpfs",
+        "tracefs",
+    }
+    _IGNORED_DISK_PREFIXES = (
+        "/proc",
+        "/run",
+        "/snap",
+        "/sys",
+        "/var/lib/docker/overlay2",
+    )
 
     def __init__(self) -> None:
         self.client = docker.from_env()
@@ -324,7 +351,8 @@ class DockerService:
     def list_volumes(self) -> list[dict[str, Any]]:
         """List docker volumes with useful metadata for the UI."""
         volumes = self.client.volumes.list()
-        return [self._serialize_volume(volume) for volume in volumes]
+        rows = [self._serialize_volume(volume) for volume in volumes]
+        return [row for row in rows if not self._is_hidden_volume(row)]
 
     def create_volume(
         self,
@@ -358,27 +386,40 @@ class DockerService:
     def list_disks(self) -> list[dict[str, Any]]:
         """List host disk partitions and usage statistics."""
         partitions = psutil.disk_partitions(all=False)
-        rows: list[dict[str, Any]] = []
+        deduped: dict[tuple[str, str, int, int, int], dict[str, Any]] = {}
         for part in partitions:
+            if self._should_skip_partition(part):
+                continue
+
             mountpoint = part.mountpoint
             try:
                 usage = psutil.disk_usage(mountpoint)
             except OSError:
                 continue
 
-            rows.append(
-                {
-                    "device": part.device,
-                    "mountpoint": mountpoint,
-                    "fstype": part.fstype,
-                    "opts": part.opts,
-                    "total_bytes": int(usage.total),
-                    "used_bytes": int(usage.used),
-                    "free_bytes": int(usage.free),
-                    "percent": float(usage.percent),
-                }
-            )
+            row = {
+                "device": part.device,
+                "mountpoint": mountpoint,
+                "fstype": part.fstype,
+                "opts": part.opts,
+                "total_bytes": int(usage.total),
+                "used_bytes": int(usage.used),
+                "free_bytes": int(usage.free),
+                "percent": float(usage.percent),
+            }
 
+            key = (
+                str(part.device),
+                str(part.fstype),
+                int(usage.total),
+                int(usage.used),
+                int(usage.free),
+            )
+            existing = deduped.get(key)
+            if existing is None or len(mountpoint) < len(str(existing["mountpoint"])):
+                deduped[key] = row
+
+        rows = list(deduped.values())
         rows.sort(key=lambda row: str(row.get("mountpoint", "")))
         return rows
 
@@ -410,6 +451,27 @@ class DockerService:
             "ref_count": ref_count,
             "in_use": ref_count > 0,
         }
+
+    @classmethod
+    def _is_hidden_volume(cls, volume: dict[str, Any]) -> bool:
+        name = str(volume.get("name", ""))
+        labels = volume.get("labels") or {}
+        ref_count = int(volume.get("ref_count", 0) or 0)
+        return bool(cls._ANONYMOUS_VOLUME_PATTERN.fullmatch(name) and ref_count == 0 and not labels)
+
+    @classmethod
+    def _should_skip_partition(cls, part: Any) -> bool:
+        mountpoint = str(getattr(part, "mountpoint", ""))
+        fstype = str(getattr(part, "fstype", ""))
+
+        if not mountpoint or not Path(mountpoint).is_dir():
+            return True
+        if fstype in cls._IGNORED_DISK_FSTYPES:
+            return True
+        return any(
+            mountpoint == prefix or mountpoint.startswith(f"{prefix}/")
+            for prefix in cls._IGNORED_DISK_PREFIXES
+        )
 
     def list_networks(self) -> list[dict[str, Any]]:
         """List docker networks with useful metadata for the UI."""

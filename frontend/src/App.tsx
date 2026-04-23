@@ -13,8 +13,9 @@
  * - /settings — Dashboard settings (placeholder)
  */
 
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { AuthProvider, useAuth } from './auth/AuthContext';
 import MainLayout from './layouts/MainLayout';
 import { fetchSetupStatus } from './api/setupApi';
 import Login from './pages/Login';
@@ -56,12 +57,15 @@ function ComingSoon({ title }: { title: string }) {
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <AppRoutes />
+      <AuthProvider>
+        <AppRoutes />
+      </AuthProvider>
     </QueryClientProvider>
   );
 }
 
 function AppRoutes() {
+  const { user, loading: authLoading } = useAuth();
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['setup-status'],
     queryFn: fetchSetupStatus,
@@ -93,6 +97,14 @@ function AppRoutes() {
 
   const initialized = Boolean(data?.initialized);
 
+  if (initialized && authLoading) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: '1rem' }}>
+        <div className="card">Restoring session...</div>
+      </div>
+    );
+  }
+
   return (
     <BrowserRouter>
       {!initialized ? (
@@ -105,10 +117,10 @@ function AppRoutes() {
       ) : (
         <Routes>
           {/* Auth routes — no sidebar */}
-          <Route path="/login" element={<Login />} />
+          <Route path="/login" element={user ? <Navigate to="/dashboard" replace /> : <Login />} />
 
-          {/* App routes — with sidebar layout */}
-          <Route element={<MainLayout />}>
+          {/* App routes — authenticated + with sidebar layout */}
+          <Route element={<ProtectedLayout />}>
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/containers" element={<Containers />} />
             <Route path="/docker-resources" element={<DockerResources />} />
@@ -120,9 +132,28 @@ function AppRoutes() {
           </Route>
 
           {/* Default redirect */}
-          <Route path="*" element={<Navigate to="/login" replace />} />
+          <Route path="*" element={<Navigate to={user ? '/dashboard' : '/login'} replace />} />
         </Routes>
       )}
     </BrowserRouter>
   );
+}
+
+function ProtectedLayout() {
+  const { user, loading } = useAuth();
+  const location = useLocation();
+
+  if (loading) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: '1rem' }}>
+        <div className="card">Restoring session...</div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Navigate to="/login" replace state={{ from: location }} />;
+  }
+
+  return <MainLayout />;
 }

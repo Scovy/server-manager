@@ -125,6 +125,18 @@
 
 .sidebar__version {
   text-align: center;
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.sidebar__user {
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  margin: 0;
+}
+
+.sidebar__logout {
+  width: 100%;
 }
 
 /* ── Content Area ───────────────────────────────────── */

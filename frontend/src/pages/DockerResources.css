@@ -82,6 +82,27 @@
   font-size: var(--text-sm);
 }
 
+.docker-resource-table__truncate {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+
+.docker-resource-table__truncate--name {
+  max-width: 340px;
+}
+
+.docker-resource-table__truncate--mountpoint {
+  max-width: 560px;
+}
+
+.docker-resource-table__truncate--device {
+  max-width: 180px;
+}
+
 .docker-resource-empty {
   color: var(--color-text-muted);
   margin-top: var(--space-sm);
@@ -90,5 +111,11 @@
 @media (max-width: 768px) {
   .docker-resource-create {
     grid-template-columns: 1fr;
+  }
+
+  .docker-resource-table__truncate--name,
+  .docker-resource-table__truncate--mountpoint,
+  .docker-resource-table__truncate--device {
+    max-width: 220px;
   }
 }

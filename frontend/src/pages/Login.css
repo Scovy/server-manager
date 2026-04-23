@@ -66,6 +66,15 @@
   font-size: var(--text-sm);
 }
 
+.login__notice {
+  background: rgba(14, 165, 233, 0.1);
+  border: 1px solid rgba(14, 165, 233, 0.35);
+  color: var(--color-info);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+
 .login__submit {
   width: 100%;
   padding: var(--space-md);

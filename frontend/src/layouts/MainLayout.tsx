@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { NavLink, Outlet } from 'react-router-dom';
+import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { useAuth } from '../auth/AuthContext';
 import './MainLayout.css';
 
 /**
@@ -28,6 +29,13 @@ const navItems: NavItem[] = [
 
 export default function MainLayout() {
   const [collapsed, setCollapsed] = useState(false);
+  const navigate = useNavigate();
+  const { user, signOut } = useAuth();
+
+  async function handleSignOut() {
+    await signOut();
+    navigate('/login', { replace: true });
+  }
 
   return (
     <div className={`layout ${collapsed ? 'layout--collapsed' : ''}`}>
@@ -67,6 +75,10 @@ export default function MainLayout() {
         <div className="sidebar__footer">
           {!collapsed && (
             <div className="sidebar__version">
+              {user ? <p className="sidebar__user">Signed in as {user.username}</p> : null}
+              <button className="btn btn-secondary sidebar__logout" onClick={() => void handleSignOut()}>
+                Sign out
+              </button>
               <span className="badge badge-info">v0.1.0</span>
             </div>
           )}

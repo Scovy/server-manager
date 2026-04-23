@@ -2,11 +2,21 @@
  * Tests for the App component — verifies routing and basic rendering.
  */
 import { render, screen } from '@testing-library/react';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import Login from '../pages/Login';
 import Dashboard from '../pages/Dashboard';
+
+vi.mock('../auth/AuthContext', () => ({
+  useAuth: () => ({
+    user: null,
+    loading: false,
+    establishSession: vi.fn(),
+    signOut: vi.fn(),
+    reloadSession: vi.fn(),
+  }),
+}));
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: false } },

@@ -150,11 +150,29 @@ export default function DockerResources() {
               <tbody>
                 {volumes.map((volume) => (
                   <tr key={volume.name}>
-                    <td>{volume.name}</td>
+                    <td>
+                      <span
+                        className="docker-resource-table__truncate docker-resource-table__truncate--name"
+                        title={volume.name}
+                      >
+                        {volume.name}
+                      </span>
+                    </td>
                     <td>{volume.driver}</td>
                     <td>{volume.ref_count}</td>
                     <td>{formatBytes(volume.size_bytes)}</td>
-                    <td>{volume.mountpoint || '-'}</td>
+                    <td>
+                      {volume.mountpoint ? (
+                        <span
+                          className="docker-resource-table__truncate docker-resource-table__truncate--mountpoint"
+                          title={volume.mountpoint}
+                        >
+                          {volume.mountpoint}
+                        </span>
+                      ) : (
+                        '-'
+                      )}
+                    </td>
                     <td>
                       <button
                         className="btn btn-danger"
@@ -191,8 +209,26 @@ export default function DockerResources() {
               <tbody>
                 {disks.map((disk) => (
                   <tr key={`${disk.device}-${disk.mountpoint}`}>
-                    <td>{disk.mountpoint}</td>
-                    <td>{disk.device || '-'}</td>
+                    <td>
+                      <span
+                        className="docker-resource-table__truncate docker-resource-table__truncate--mountpoint"
+                        title={disk.mountpoint}
+                      >
+                        {disk.mountpoint}
+                      </span>
+                    </td>
+                    <td>
+                      {disk.device ? (
+                        <span
+                          className="docker-resource-table__truncate docker-resource-table__truncate--device"
+                          title={disk.device}
+                        >
+                          {disk.device}
+                        </span>
+                      ) : (
+                        '-'
+                      )}
+                    </td>
                     <td>{disk.fstype || '-'}</td>
                     <td>{formatBytes(disk.used_bytes)}</td>
                     <td>{formatBytes(disk.total_bytes)}</td>

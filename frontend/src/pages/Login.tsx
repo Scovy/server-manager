@@ -1,36 +1,59 @@
 import { useState, type FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { login } from '../api/authApi';
+import { useAuth } from '../auth/AuthContext';
 import './Login.css';
 
 /**
  * Login page — authentication entry point.
- *
- * Currently a UI shell without API wiring.
- * Will be connected to POST /api/auth/login in the auth implementation phase.
  */
 export default function Login() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const { establishSession } = useAuth();
+
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [totpCode, setTotpCode] = useState('');
+  const [twoFactorRequired, setTwoFactorRequired] = useState(false);
+  const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  const redirectTarget = (
+    location.state as { from?: { pathname?: string } } | undefined
+  )?.from?.pathname ?? '/dashboard';
+
+  function resetTwoFactorChallenge() {
+    if (!twoFactorRequired) return;
+    setTwoFactorRequired(false);
+    setTotpCode('');
+    setNotice('');
+  }
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError('');
+    setNotice('');
     setLoading(true);
 
-    // TODO: Replace with actual API call to POST /api/auth/login
     try {
-      // Simulate auth for now
-      if (username && password) {
-        // Will be replaced with real JWT auth
-        navigate('/dashboard');
-      } else {
-        setError('Please enter username and password');
+      const response = await login({
+        username: username.trim(),
+        password,
+        totp_code: twoFactorRequired ? totpCode.trim() : undefined,
+      });
+
+      if (response.status === '2fa_required') {
+        setTwoFactorRequired(true);
+        setNotice(response.message);
+        return;
       }
-    } catch {
-      setError('Authentication failed. Please try again.');
+
+      establishSession(response);
+      navigate(redirectTarget, { replace: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Authentication failed. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -53,6 +76,11 @@ export default function Login() {
               {error}
             </div>
           )}
+          {notice && !error ? (
+            <div className="login__notice" role="status">
+              {notice}
+            </div>
+          ) : null}
 
           <div className="login__field">
             <label className="label" htmlFor="username">
@@ -63,7 +91,10 @@ export default function Login() {
               className="input"
               type="text"
               value={username}
-              onChange={(e) => setUsername(e.target.value)}
+              onChange={(e) => {
+                setUsername(e.target.value);
+                resetTwoFactorChallenge();
+              }}
               placeholder="admin"
               autoComplete="username"
               autoFocus
@@ -80,12 +111,35 @@ export default function Login() {
               className="input"
               type="password"
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={(e) => {
+                setPassword(e.target.value);
+                resetTwoFactorChallenge();
+              }}
               placeholder="••••••••"
               autoComplete="current-password"
               required
             />
           </div>
+
+          {twoFactorRequired ? (
+            <div className="login__field">
+              <label className="label" htmlFor="totp-code">
+                Two-Factor Code
+              </label>
+              <input
+                id="totp-code"
+                className="input"
+                type="text"
+                value={totpCode}
+                onChange={(e) => setTotpCode(e.target.value)}
+                placeholder="123456"
+                autoComplete="one-time-code"
+                inputMode="numeric"
+                maxLength={8}
+                required
+              />
+            </div>
+          ) : null}
 
           <button
             type="submit"
@@ -96,10 +150,10 @@ export default function Login() {
             {loading ? (
               <>
                 <span className="animate-spin">⟳</span>
-                Signing in...
+                {twoFactorRequired ? 'Verifying...' : 'Signing in...'}
               </>
             ) : (
-              'Sign in'
+              twoFactorRequired ? 'Verify 2FA' : 'Sign in'
             )}
           </button>
         </form>
