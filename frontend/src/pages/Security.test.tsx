@@ -19,6 +19,10 @@ const apiMocks = vi.hoisted(() => ({
   verifyTwoFactor: vi.fn(),
 }));
 
+const qrCodeMocks = vi.hoisted(() => ({
+  toDataURL: vi.fn(),
+}));
+
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
     user: authMocks.user,
@@ -34,6 +38,12 @@ vi.mock('../api/authApi', () => ({
   verifyTwoFactor: apiMocks.verifyTwoFactor,
 }));
 
+vi.mock('qrcode', () => ({
+  default: {
+    toDataURL: qrCodeMocks.toDataURL,
+  },
+}));
+
 describe('Security page', () => {
   beforeEach(() => {
     authMocks.user.two_factor_enabled = false;
@@ -41,6 +51,8 @@ describe('Security page', () => {
     authMocks.reloadSession.mockReset();
     apiMocks.setupTwoFactor.mockReset();
     apiMocks.verifyTwoFactor.mockReset();
+    qrCodeMocks.toDataURL.mockReset();
+    qrCodeMocks.toDataURL.mockResolvedValue('data:image/png;base64,qr');
   });
 
   it('renders the setup call to action when 2FA is disabled', () => {
@@ -74,6 +86,10 @@ describe('Security page', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /generate secret/i }));
 
+    expect(await screen.findByAltText(/qr code for pairing/i)).toHaveAttribute(
+      'src',
+      'data:image/png;base64,qr',
+    );
     expect(await screen.findByText(/abcd efgh ijkl mnop/i)).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(/authenticator code/i), {
       target: { value: '123456' },

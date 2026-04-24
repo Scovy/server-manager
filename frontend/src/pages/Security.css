@@ -101,6 +101,33 @@
   gap: var(--space-sm);
 }
 
+.security-qr {
+  display: grid;
+  place-items: center;
+  min-height: 236px;
+  padding: var(--space-md);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border);
+  background:
+    radial-gradient(circle at top, rgba(59, 130, 246, 0.12), transparent 55%),
+    linear-gradient(180deg, rgba(15, 17, 23, 0.9), rgba(26, 29, 46, 0.95));
+}
+
+.security-qr__image {
+  display: block;
+  width: 220px;
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+}
+
+.security-qr__fallback {
+  max-width: 24rem;
+  text-align: center;
+  color: var(--color-text-secondary);
+}
+
 .security-setup__value,
 .security-setup__link {
   display: block;

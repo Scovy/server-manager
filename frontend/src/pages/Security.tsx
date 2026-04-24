@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import QRCode from 'qrcode';
 import { setupTwoFactor, verifyTwoFactor } from '../api/authApi';
 import { useAuth } from '../auth/AuthContext';
 import './Security.css';
@@ -11,6 +12,7 @@ export default function Security() {
   const { user, establishSession, reloadSession } = useAuth();
   const [setupSecret, setSetupSecret] = useState('');
   const [otpauthUri, setOtpauthUri] = useState('');
+  const [qrCodeSrc, setQrCodeSrc] = useState('');
   const [code, setCode] = useState('');
   const [loadingSetup, setLoadingSetup] = useState(false);
   const [loadingVerify, setLoadingVerify] = useState(false);
@@ -18,6 +20,42 @@ export default function Security() {
   const [error, setError] = useState('');
 
   const twoFactorEnabled = Boolean(user?.two_factor_enabled);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function generateQrCode() {
+      if (!otpauthUri) {
+        setQrCodeSrc('');
+        return;
+      }
+
+      try {
+        const nextQrCodeSrc = await QRCode.toDataURL(otpauthUri, {
+          errorCorrectionLevel: 'M',
+          margin: 2,
+          width: 220,
+          color: {
+            dark: '#e2e8f0',
+            light: '#0000',
+          },
+        });
+        if (!cancelled) {
+          setQrCodeSrc(nextQrCodeSrc);
+        }
+      } catch {
+        if (!cancelled) {
+          setQrCodeSrc('');
+        }
+      }
+    }
+
+    void generateQrCode();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [otpauthUri]);
 
   async function handleStartSetup() {
     setLoadingSetup(true);
@@ -75,6 +113,7 @@ export default function Security() {
         setMessage('Two-factor authentication is now enabled for your account.');
         setSetupSecret('');
         setOtpauthUri('');
+        setQrCodeSrc('');
       } else {
         setMessage('Code accepted. Your authenticator is working.');
       }
@@ -158,6 +197,24 @@ export default function Security() {
 
             {!twoFactorEnabled && setupSecret ? (
               <div className="security-setup">
+                <div className="security-setup__block">
+                  <span className="label">Scan with Your Authenticator</span>
+                  <div className="security-qr">
+                    {qrCodeSrc ? (
+                      <img
+                        className="security-qr__image"
+                        src={qrCodeSrc}
+                        alt="QR code for pairing your authenticator app"
+                      />
+                    ) : (
+                      <div className="security-qr__fallback">
+                        QR preview unavailable. You can still pair using the secret or setup link
+                        below.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
                 <div className="security-setup__block">
                   <label className="label" htmlFor="security-secret">
                     TOTP Secret
