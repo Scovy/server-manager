@@ -10,12 +10,16 @@ from app.models.user import User
 from app.services.auth_service import hash_password
 
 
+async def bootstrap_admin(client: AsyncClient, username: str, password: str):
+    return await client.post(
+        "/api/auth/bootstrap",
+        json={"username": username, "password": password},
+    )
+
+
 @pytest.mark.asyncio
 async def test_bootstrap_creates_first_admin_account(client: AsyncClient, async_db: AsyncSession):
-    res = await client.post(
-        "/api/auth/bootstrap",
-        json={"username": "admin", "password": "supersecret"},
-    )
+    res = await bootstrap_admin(client, "admin", "supersecret")
 
     assert res.status_code == 200
     payload = res.json()
@@ -82,6 +86,12 @@ async def test_login_requires_explicit_initial_admin_creation(client: AsyncClien
 
 @pytest.mark.asyncio
 async def test_refresh_and_logout_flow(client: AsyncClient):
+    bootstrap_res = await bootstrap_admin(client, "admin", "secret123")
+    assert bootstrap_res.status_code == 200
+
+    bootstrap_logout_res = await client.post("/api/auth/logout")
+    assert bootstrap_logout_res.status_code == 200
+
     login_res = await client.post(
         "/api/auth/login",
         json={"username": "admin", "password": "secret123"},
@@ -103,10 +113,7 @@ async def test_refresh_and_logout_flow(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_me_and_two_factor_setup_verify(client: AsyncClient, async_db: AsyncSession):
-    login_res = await client.post(
-        "/api/auth/login",
-        json={"username": "bob", "password": "pass1234"},
-    )
+    login_res = await bootstrap_admin(client, "bob", "pass1234")
     assert login_res.status_code == 200
     payload = login_res.json()
     access_token = payload["access_token"]
