@@ -114,7 +114,7 @@ def extract_subject_user_id(payload: dict[str, Any]) -> int:
 def extract_refresh_version(payload: dict[str, Any]) -> int:
     rv = payload.get("rv")
     try:
-        return int(rv)
+        return int(str(rv))
     except (TypeError, ValueError) as exc:
         raise AuthError("Token refresh version is invalid.") from exc
 
