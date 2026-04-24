@@ -13,6 +13,7 @@ async def test_setup_status_defaults_to_not_initialized(client: AsyncClient):
 
     assert res.status_code == 200
     assert res.json()["initialized"] is False
+    assert res.json()["needs_admin_setup"] is False
 
 
 @pytest.mark.asyncio
@@ -110,6 +111,7 @@ async def test_setup_initialize_writes_env_and_persists_state(
     status_res = await client.get("/api/setup/status")
     assert status_res.status_code == 200
     assert status_res.json()["initialized"] is True
+    assert status_res.json()["needs_admin_setup"] is True
 
     root_env = (tmp_path / ".env").read_text(encoding="utf-8")
     backend_env = (tmp_path / "backend" / ".env").read_text(encoding="utf-8")

@@ -1,5 +1,6 @@
 export interface SetupStatus {
   initialized: boolean;
+  needs_admin_setup: boolean;
 }
 
 export interface SetupIssue {

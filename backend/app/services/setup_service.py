@@ -13,10 +13,11 @@ from pathlib import Path
 
 import docker
 from docker.errors import DockerException, NotFound
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.setting import Setting
+from app.models.user import User
 
 SETUP_INITIALIZED_KEY = "setup_initialized"
 logger = logging.getLogger(__name__)
@@ -240,8 +241,12 @@ def apply_runtime_handover() -> None:
 async def get_setup_status(db: AsyncSession) -> dict[str, object]:
     row = await db.execute(select(Setting).where(Setting.key == SETUP_INITIALIZED_KEY))
     initialized = row.scalar_one_or_none()
+    user_count_row = await db.execute(select(func.count(User.id)))
+    user_count = int(user_count_row.scalar_one())
+    is_initialized = bool(initialized and initialized.value == "true")
     return {
-        "initialized": bool(initialized and initialized.value == "true"),
+        "initialized": is_initialized,
+        "needs_admin_setup": is_initialized and user_count == 0,
     }
 
 

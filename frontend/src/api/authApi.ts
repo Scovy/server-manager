@@ -1,6 +1,7 @@
 import type {
   AuthSuccessResponse,
   AuthUser,
+  InitialAdminCreateRequest,
   LoginRequest,
   LoginResponse,
   TwoFactorSetupResponse,
@@ -55,6 +56,18 @@ export async function login(payload: LoginRequest): Promise<LoginResponse> {
   if (data.status === 'ok') {
     setStoredAccessToken(data.access_token);
   }
+  return data;
+}
+
+export async function createInitialAdmin(payload: InitialAdminCreateRequest): Promise<AuthSuccessResponse> {
+  const res = await fetch(`${BASE}/bootstrap`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(payload),
+  });
+  const data = await parseJson<AuthSuccessResponse>(res, 'Failed to create the initial admin account.');
+  setStoredAccessToken(data.access_token);
   return data;
 }
 

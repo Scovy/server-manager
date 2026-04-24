@@ -40,7 +40,6 @@ class AuthTokens:
 class LoginResult:
     user: User
     two_factor_required: bool
-    bootstrap_created: bool = False
 
 
 def hash_password(password: str) -> str:
@@ -160,7 +159,7 @@ async def authenticate_login(
     password: str,
     totp_code: str | None,
 ) -> LoginResult:
-    """Authenticate login credentials with optional first-user bootstrap."""
+    """Authenticate login credentials."""
     normalized_username = username.strip()
     if not normalized_username:
         raise AuthError("Username is required.")
@@ -168,21 +167,12 @@ async def authenticate_login(
         raise AuthError("Password is required.")
 
     user = await get_user_by_username(db, normalized_username)
-    bootstrap_created = False
 
     if user is None:
-        total_users = await _count_users(db)
+        total_users = await count_users(db)
         if total_users == 0:
-            user = User(
-                username=normalized_username,
-                password=hash_password(password),
-                role="admin",
-            )
-            db.add(user)
-            await db.flush()
-            bootstrap_created = True
-        else:
-            raise AuthError("Invalid username or password.")
+            raise AuthError("Initial admin account has not been created yet.")
+        raise AuthError("Invalid username or password.")
 
     if not verify_password(password, user.password):
         raise AuthError("Invalid username or password.")
@@ -193,13 +183,39 @@ async def authenticate_login(
             return LoginResult(
                 user=user,
                 two_factor_required=True,
-                bootstrap_created=bootstrap_created,
             )
 
         if not verify_totp_code(user.totp_secret, normalized_code):
             raise AuthError("Invalid two-factor authentication code.")
 
-    return LoginResult(user=user, two_factor_required=False, bootstrap_created=bootstrap_created)
+    return LoginResult(user=user, two_factor_required=False)
+
+
+async def create_initial_admin(
+    db: AsyncSession,
+    *,
+    username: str,
+    password: str,
+) -> User:
+    """Create the very first admin account for a freshly initialized instance."""
+    normalized_username = username.strip()
+    if not normalized_username:
+        raise AuthError("Username is required.")
+    if not password:
+        raise AuthError("Password is required.")
+
+    existing_count = await count_users(db)
+    if existing_count > 0:
+        raise AuthError("Initial admin account has already been created.")
+
+    user = User(
+        username=normalized_username,
+        password=hash_password(password),
+        role="admin",
+    )
+    db.add(user)
+    await db.flush()
+    return user
 
 
 async def get_refresh_version(db: AsyncSession, user_id: int) -> int:
@@ -309,6 +325,6 @@ async def _clear_pending_totp(db: AsyncSession, user_id: int) -> None:
         await db.delete(setting)
 
 
-async def _count_users(db: AsyncSession) -> int:
+async def count_users(db: AsyncSession) -> int:
     row = await db.execute(select(func.count(User.id)))
     return int(row.scalar_one())

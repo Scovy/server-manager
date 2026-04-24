@@ -19,6 +19,7 @@ import { AuthProvider, useAuth } from './auth/AuthContext';
 import MainLayout from './layouts/MainLayout';
 import { fetchSetupStatus } from './api/setupApi';
 import Login from './pages/Login';
+import CreateAccount from './pages/CreateAccount';
 import Dashboard from './pages/Dashboard';
 import Containers from './pages/Containers';
 import DockerResources from './pages/DockerResources';
@@ -97,6 +98,7 @@ function AppRoutes() {
   }
 
   const initialized = Boolean(data?.initialized);
+  const needsAdminSetup = Boolean(data?.needs_admin_setup);
 
   if (initialized && authLoading) {
     return (
@@ -118,7 +120,32 @@ function AppRoutes() {
       ) : (
         <Routes>
           {/* Auth routes — no sidebar */}
-          <Route path="/login" element={user ? <Navigate to="/dashboard" replace /> : <Login />} />
+          <Route
+            path="/create-account"
+            element={
+              user ? (
+                <Navigate to="/dashboard" replace />
+              ) : needsAdminSetup ? (
+                <CreateAccount onCreated={async () => {
+                  await refetch();
+                }} />
+              ) : (
+                <Navigate to="/login" replace />
+              )
+            }
+          />
+          <Route
+            path="/login"
+            element={
+              user ? (
+                <Navigate to="/dashboard" replace />
+              ) : needsAdminSetup ? (
+                <Navigate to="/create-account" replace />
+              ) : (
+                <Login />
+              )
+            }
+          />
 
           {/* App routes — authenticated + with sidebar layout */}
           <Route element={<ProtectedLayout />}>
@@ -133,7 +160,10 @@ function AppRoutes() {
           </Route>
 
           {/* Default redirect */}
-          <Route path="*" element={<Navigate to={user ? '/dashboard' : '/login'} replace />} />
+          <Route
+            path="*"
+            element={<Navigate to={user ? '/dashboard' : needsAdminSetup ? '/create-account' : '/login'} replace />}
+          />
         </Routes>
       )}
     </BrowserRouter>

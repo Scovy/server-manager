@@ -37,14 +37,17 @@ export async function fetchSetupStatus(): Promise<SetupStatus> {
 
   const text = await res.text();
   if (!text.trim()) {
-    return { initialized: false };
+    return { initialized: false, needs_admin_setup: false };
   }
 
   try {
     const payload = JSON.parse(text) as Partial<SetupStatus>;
-    return { initialized: Boolean(payload.initialized) };
+    return {
+      initialized: Boolean(payload.initialized),
+      needs_admin_setup: Boolean(payload.needs_admin_setup),
+    };
   } catch {
-    return { initialized: false };
+    return { initialized: false, needs_admin_setup: false };
   }
 }
 

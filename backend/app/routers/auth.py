@@ -19,6 +19,7 @@ from app.services.auth_service import (
     authenticate_login,
     build_totp_uri,
     bump_refresh_version,
+    create_initial_admin,
     create_pending_totp,
     decode_refresh_token,
     extract_refresh_version,
@@ -58,6 +59,11 @@ class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=128)
     password: str = Field(min_length=1, max_length=256)
     totp_code: str | None = Field(default=None, max_length=12)
+
+
+class InitialAdminCreateRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=8, max_length=256)
 
 
 class StatusResponse(BaseModel):
@@ -114,7 +120,31 @@ async def login(
         access_token=tokens.access_token,
         expires_in=tokens.expires_in,
         user=AuthUserResponse(**serialize_auth_user(result.user)),
-        bootstrap_created=result.bootstrap_created,
+    )
+
+
+@router.post("/bootstrap", response_model=AuthSuccessResponse)
+async def bootstrap_initial_admin(
+    payload: InitialAdminCreateRequest,
+    response: Response,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> AuthSuccessResponse:
+    """Create the first admin account for a newly initialized instance and sign in immediately."""
+    try:
+        user = await create_initial_admin(db, username=payload.username, password=payload.password)
+    except AuthError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    refresh_version = await get_refresh_version(db, user.id)
+    tokens = issue_tokens(user, refresh_version)
+    _set_refresh_cookie(response, tokens.refresh_token, secure=_is_secure_request(request))
+
+    return AuthSuccessResponse(
+        access_token=tokens.access_token,
+        expires_in=tokens.expires_in,
+        user=AuthUserResponse(**serialize_auth_user(user)),
+        bootstrap_created=True,
     )
 
 

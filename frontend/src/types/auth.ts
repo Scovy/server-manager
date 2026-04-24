@@ -27,6 +27,11 @@ export interface LoginRequest {
   totp_code?: string;
 }
 
+export interface InitialAdminCreateRequest {
+  username: string;
+  password: string;
+}
+
 export interface TwoFactorSetupResponse {
   secret: string;
   otpauth_uri: string;

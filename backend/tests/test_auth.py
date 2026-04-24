@@ -11,9 +11,9 @@ from app.services.auth_service import hash_password
 
 
 @pytest.mark.asyncio
-async def test_login_bootstraps_first_admin_account(client: AsyncClient, async_db: AsyncSession):
+async def test_bootstrap_creates_first_admin_account(client: AsyncClient, async_db: AsyncSession):
     res = await client.post(
-        "/api/auth/login",
+        "/api/auth/bootstrap",
         json={"username": "admin", "password": "supersecret"},
     )
 
@@ -67,6 +67,17 @@ async def test_login_requires_totp_when_enabled(client: AsyncClient, async_db: A
     )
     assert valid_res.status_code == 200
     assert valid_res.json()["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_login_requires_explicit_initial_admin_creation(client: AsyncClient):
+    res = await client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "supersecret"},
+    )
+
+    assert res.status_code == 401
+    assert res.json()["detail"] == "Initial admin account has not been created yet."
 
 
 @pytest.mark.asyncio
