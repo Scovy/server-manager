@@ -130,5 +130,9 @@ export async function verifyTwoFactor(code: string): Promise<TwoFactorVerifyResp
     credentials: 'include',
     body: JSON.stringify({ code }),
   });
-  return parseJson<TwoFactorVerifyResponse>(res, 'Failed to verify two-factor code.');
+  const data = await parseJson<TwoFactorVerifyResponse>(res, 'Failed to verify two-factor code.');
+  if (data.access_token) {
+    setStoredAccessToken(data.access_token);
+  }
+  return data;
 }

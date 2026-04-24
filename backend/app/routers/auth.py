@@ -77,6 +77,10 @@ class TwoFactorVerifyRequest(BaseModel):
 class TwoFactorVerifyResponse(BaseModel):
     status: Literal["verified", "enabled"]
     two_factor_enabled: bool
+    access_token: str | None = None
+    token_type: Literal["bearer"] | None = None
+    expires_in: int | None = None
+    user: AuthUserResponse | None = None
 
 
 @router.post("/login", response_model=AuthSuccessResponse | TwoFactorRequiredResponse)
@@ -212,6 +216,8 @@ async def setup_two_factor(
 @router.post("/2fa/verify", response_model=TwoFactorVerifyResponse)
 async def verify_two_factor(
     payload: TwoFactorVerifyRequest,
+    response: Response,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_current_user),
 ) -> TwoFactorVerifyResponse:
@@ -221,9 +227,24 @@ async def verify_two_factor(
     except AuthError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
+    auth_user = AuthUserResponse(**serialize_auth_user(current_user))
+    if outcome == "enabled":
+        refresh_version = await get_refresh_version(db, current_user.id)
+        tokens = issue_tokens(current_user, refresh_version)
+        _set_refresh_cookie(response, tokens.refresh_token, secure=_is_secure_request(request))
+        return TwoFactorVerifyResponse(
+            status=outcome,
+            two_factor_enabled=True,
+            access_token=tokens.access_token,
+            token_type="bearer",
+            expires_in=tokens.expires_in,
+            user=auth_user,
+        )
+
     return TwoFactorVerifyResponse(
         status=outcome,
         two_factor_enabled=bool(current_user.totp_secret),
+        user=auth_user,
     )
 
 

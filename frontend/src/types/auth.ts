@@ -35,4 +35,8 @@ export interface TwoFactorSetupResponse {
 export interface TwoFactorVerifyResponse {
   status: 'verified' | 'enabled';
   two_factor_enabled: boolean;
+  access_token?: string;
+  token_type?: 'bearer';
+  expires_in?: number;
+  user?: AuthUser;
 }

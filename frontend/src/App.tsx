@@ -24,6 +24,7 @@ import Containers from './pages/Containers';
 import DockerResources from './pages/DockerResources';
 import Marketplace from './pages/Marketplace';
 import Domains from './pages/Domains';
+import Security from './pages/Security';
 import SetupWizard from './pages/SetupWizard';
 
 const queryClient = new QueryClient({
@@ -127,7 +128,7 @@ function AppRoutes() {
             <Route path="/marketplace" element={<Marketplace />} />
             <Route path="/domains" element={<Domains />} />
             <Route path="/backup" element={<ComingSoon title="Backup & Restore" />} />
-            <Route path="/security" element={<ComingSoon title="Security" />} />
+            <Route path="/security" element={<Security />} />
             <Route path="/settings" element={<ComingSoon title="Settings" />} />
           </Route>
 

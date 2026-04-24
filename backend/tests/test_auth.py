@@ -117,6 +117,13 @@ async def test_me_and_two_factor_setup_verify(client: AsyncClient, async_db: Asy
     assert verify_res.status_code == 200
     assert verify_res.json()["status"] == "enabled"
     assert verify_res.json()["two_factor_enabled"] is True
+    assert verify_res.json()["access_token"]
+    assert verify_res.json()["user"]["two_factor_enabled"] is True
+    assert "refresh_token=" in verify_res.headers.get("set-cookie", "")
+
+    refresh_res = await client.post("/api/auth/refresh")
+    assert refresh_res.status_code == 200
+    assert refresh_res.json()["status"] == "ok"
 
     row = await async_db.execute(select(User).where(User.username == "bob"))
     user = row.scalar_one_or_none()
