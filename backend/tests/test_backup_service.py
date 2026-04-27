@@ -1,9 +1,13 @@
 """Unit tests for backup service volume copy fallbacks."""
 
 import sqlite3
+import tarfile
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from app.services.backup_service import BackupService
 
@@ -233,3 +237,39 @@ def test_restore_marketplace_apps_falls_back_to_sdk_without_docker_cli(tmp_path:
     assert call_kwargs["host_port"] == 3010
     assert call_kwargs["env"] == {"USER_UID": "1001", "USER_GID": "1001"}
     assert call_kwargs["volumes"] == [{"name": "gitea-data", "mount_path": "/data"}]
+
+
+def test_extract_tar_safely_allows_safe_symlink(tmp_path: Path) -> None:
+    archive_path = tmp_path / "safe.tar"
+    with tarfile.open(archive_path, "w") as tar:
+        content = b"hello"
+        file_info = tarfile.TarInfo("payload/file.txt")
+        file_info.size = len(content)
+        tar.addfile(file_info, BytesIO(content))
+
+        symlink_info = tarfile.TarInfo("payload/link.txt")
+        symlink_info.type = tarfile.SYMTYPE
+        symlink_info.linkname = "file.txt"
+        tar.addfile(symlink_info)
+
+    extract_root = tmp_path / "extract"
+    extract_root.mkdir(parents=True, exist_ok=True)
+    BackupService._extract_tar_safely(archive_path, extract_root)
+
+    assert (extract_root / "payload" / "file.txt").read_text(encoding="utf-8") == "hello"
+    assert (extract_root / "payload" / "link.txt").is_symlink()
+
+
+def test_extract_tar_safely_rejects_unsafe_symlink(tmp_path: Path) -> None:
+    archive_path = tmp_path / "unsafe.tar"
+    with tarfile.open(archive_path, "w") as tar:
+        symlink_info = tarfile.TarInfo("payload/link.txt")
+        symlink_info.type = tarfile.SYMTYPE
+        symlink_info.linkname = "../../outside.txt"
+        tar.addfile(symlink_info)
+
+    extract_root = tmp_path / "extract"
+    extract_root.mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(ValueError, match="unsafe file paths"):
+        BackupService._extract_tar_safely(archive_path, extract_root)

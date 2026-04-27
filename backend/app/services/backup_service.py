@@ -791,15 +791,15 @@ class BackupService:
     @staticmethod
     def _extract_tar_safely(archive_path: Path, destination: Path) -> None:
         destination_abs = destination.resolve()
-        with tarfile.open(archive_path, "r:*") as tar:
-            members = tar.getmembers()
-            for member in members:
-                if member.issym() or member.islnk():
-                    raise ValueError("Backup archive contains unsupported symlink entry")
-                target = (destination / member.name).resolve()
-                if not target.is_relative_to(destination_abs):
-                    raise ValueError("Backup archive contains unsafe file paths")
-            tar.extractall(path=destination)
+        try:
+            with tarfile.open(archive_path, "r:*") as tar:
+                for member in tar.getmembers():
+                    target = (destination / member.name).resolve()
+                    if not target.is_relative_to(destination_abs):
+                        raise ValueError("Backup archive contains unsafe file paths")
+                tar.extractall(path=destination, filter="data")
+        except tarfile.TarError as exc:
+            raise ValueError("Backup archive contains unsafe file paths") from exc
 
     def _load_and_validate_manifest(self, extract_root: Path) -> dict[str, Any]:
         manifest_path = extract_root / self.MANIFEST_PATH
