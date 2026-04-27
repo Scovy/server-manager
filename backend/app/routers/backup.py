@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any, NoReturn
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 
 from app.database import engine
@@ -22,10 +22,12 @@ def _handle_service_error(exc: ValueError) -> NoReturn:
 
 
 @router.post("/export")
-def export_backup() -> FileResponse:
+def export_backup(
+    mode: str = Query("config", pattern="^(config|full)$"),
+) -> FileResponse:
     service = BackupService()
     try:
-        archive_path = service.create_backup()
+        archive_path = service.create_backup(include_volumes=(mode == "full"))
         return FileResponse(
             path=archive_path,
             media_type="application/gzip",

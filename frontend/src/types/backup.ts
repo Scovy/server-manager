@@ -11,5 +11,6 @@ export interface BackupRestoreResult {
     database: boolean;
     apps_dir: boolean;
     config_files: string[];
+    volumes: string[];
   };
 }

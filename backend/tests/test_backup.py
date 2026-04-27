@@ -21,6 +21,23 @@ async def test_backup_export_success(client: AsyncClient, tmp_path: Path):
 
     assert res.status_code == 200
     assert res.headers["content-type"].startswith("application/gzip")
+    service.create_backup.assert_called_once_with(include_volumes=False)
+
+
+@pytest.mark.asyncio
+async def test_backup_export_full_mode_success(client: AsyncClient, tmp_path: Path):
+    archive = tmp_path / "full-backup.tar.gz"
+    archive.write_bytes(b"backup-bytes")
+
+    with patch("app.routers.backup.BackupService") as mock_service_cls:
+        service = mock_service_cls.return_value
+        service.create_backup.return_value = archive
+
+        res = await client.post("/api/backup/export?mode=full")
+
+    assert res.status_code == 200
+    assert res.headers["content-type"].startswith("application/gzip")
+    service.create_backup.assert_called_once_with(include_volumes=True)
 
 
 @pytest.mark.asyncio
@@ -58,11 +75,12 @@ async def test_backup_import_success(client: AsyncClient):
         service = mock_service_cls.return_value
         service.restore_backup.return_value = {
             "status": "ok",
-            "message": "Config backup restored successfully",
+            "message": "Backup restored successfully",
             "restored": {
                 "database": True,
                 "apps_dir": True,
                 "config_files": [],
+                "volumes": [],
             },
         }
 

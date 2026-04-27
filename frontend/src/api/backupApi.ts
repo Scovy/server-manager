@@ -24,7 +24,7 @@ function parseFilenameFromHeader(headerValue: string | null): string | null {
 }
 
 export async function exportConfigBackup(): Promise<{ blob: Blob; filename: string }> {
-  const res = await fetch(`${BASE}/export`, { method: 'POST' });
+  const res = await fetch(`${BASE}/export?mode=config`, { method: 'POST' });
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(parseErrorMessage(body, 'Failed to export backup'));
@@ -33,6 +33,19 @@ export async function exportConfigBackup(): Promise<{ blob: Blob; filename: stri
   const blob = await res.blob();
   const filename =
     parseFilenameFromHeader(res.headers.get('content-disposition')) || 'config-backup.tar.gz';
+
+  return { blob, filename };
+}
+
+export async function exportFullBackup(): Promise<{ blob: Blob; filename: string }> {
+  const res = await fetch(`${BASE}/export?mode=full`, { method: 'POST' });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(parseErrorMessage(body, 'Failed to export backup'));
+  }
+
+  const blob = await res.blob();
+  const filename = parseFilenameFromHeader(res.headers.get('content-disposition')) || 'full-backup.tar.gz';
 
   return { blob, filename };
 }

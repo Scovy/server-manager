@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   exportConfigBackup,
+  exportFullBackup,
   fetchBackups,
   importConfigBackup,
   removeBackup,
@@ -59,12 +60,13 @@ export default function Backup() {
     return () => window.clearTimeout(timer);
   }, []);
 
-  async function handleCreateBackup() {
+  async function handleCreateBackup(mode: 'config' | 'full') {
     setExporting(true);
     setError('');
     setMessage('');
     try {
-      const { blob, filename } = await exportConfigBackup();
+      const payload = mode === 'full' ? await exportFullBackup() : await exportConfigBackup();
+      const { blob, filename } = payload;
       const objectUrl = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = objectUrl;
@@ -74,7 +76,11 @@ export default function Backup() {
       link.remove();
       URL.revokeObjectURL(objectUrl);
 
-      setMessage(`Backup created: ${filename}`);
+      setMessage(
+        mode === 'full'
+          ? `Full backup created (including Docker volumes): ${filename}`
+          : `Config backup created: ${filename}`,
+      );
       await loadBackups();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create backup');
@@ -128,7 +134,9 @@ export default function Backup() {
       <div className="backup-page__header">
         <div>
           <h1 className="backup-page__title">Backup</h1>
-          <p className="backup-page__subtitle">Config-only snapshots for database and app settings</p>
+          <p className="backup-page__subtitle">
+            Create config-only or full snapshots (config + Docker volumes)
+          </p>
         </div>
         <div className="backup-page__actions">
           <button className="btn btn-secondary" onClick={() => void loadBackups()} disabled={loading}>
@@ -136,10 +144,17 @@ export default function Backup() {
           </button>
           <button
             className="btn btn-primary"
-            onClick={() => void handleCreateBackup()}
+            onClick={() => void handleCreateBackup('config')}
             disabled={exporting}
           >
-            {exporting ? 'Creating...' : 'Create Backup'}
+            {exporting ? 'Creating...' : 'Create Config Backup'}
+          </button>
+          <button
+            className="btn btn-primary"
+            onClick={() => void handleCreateBackup('full')}
+            disabled={exporting}
+          >
+            {exporting ? 'Creating...' : 'Create Full Backup'}
           </button>
         </div>
       </div>
@@ -150,7 +165,7 @@ export default function Backup() {
       <section className="card backup-card">
         <h2>Restore From File</h2>
         <p className="backup-card__helper">
-          Upload a previously exported config backup archive (`.tar.gz`) from your local machine.
+          Upload a previously exported backup archive (`.tar.gz`) from your local machine.
         </p>
         <div className="backup-restore">
           <input

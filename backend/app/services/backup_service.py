@@ -1,4 +1,4 @@
-"""Backup service for config-only export/import operations."""
+"""Backup service for config-only and full (with Docker volumes) backups."""
 
 from __future__ import annotations
 
@@ -12,15 +12,19 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
+import docker
+from docker.errors import APIError, DockerException, NotFound
+
 from app.config import settings
 
 
 class BackupService:
-    """Create, list, delete, and restore config-only backups."""
+    """Create, list, delete, and restore configuration backups."""
 
     MANIFEST_PATH = "manifest.json"
     FORMAT_VERSION = 1
-    BACKUP_TYPE = "config-only"
+    BACKUP_TYPE_CONFIG_ONLY = "config-only"
+    BACKUP_TYPE_FULL = "full-with-volumes"
 
     def __init__(self) -> None:
         self._backend_root = Path(__file__).resolve().parents[2]
@@ -28,33 +32,42 @@ class BackupService:
         self._backup_dir = Path(settings.BACKUP_DIR).expanduser().resolve()
         self._backup_dir.mkdir(parents=True, exist_ok=True)
 
-    def create_backup(self) -> Path:
-        """Create a backup archive and return its filesystem path."""
+    def create_backup(self, include_volumes: bool = False) -> Path:
+        """Create one backup archive and return its path."""
         timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-        archive_path = self._unique_archive_path(f"config-backup-{timestamp}.tar.gz")
+        backup_kind = "full" if include_volumes else "config"
+        archive_path = self._unique_archive_path(f"{backup_kind}-backup-{timestamp}.tar.gz")
 
-        with TemporaryDirectory(prefix="config-backup-stage-") as tmp:
+        with TemporaryDirectory(prefix=f"{backup_kind}-backup-stage-") as tmp:
             stage_root = Path(tmp)
             checksums: dict[str, str] = {}
 
             database_archive_path = self._stage_database_snapshot(stage_root, checksums)
             apps_archive_path = self._stage_apps(stage_root, checksums)
             config_archive_paths = self._stage_config_files(stage_root, checksums)
+            backup_type = self.BACKUP_TYPE_CONFIG_ONLY
+            volumes: dict[str, Any] | None = None
 
-            manifest = {
+            if include_volumes:
+                volumes = self._stage_volumes(stage_root, checksums)
+                backup_type = self.BACKUP_TYPE_FULL
+
+            manifest: dict[str, Any] = {
                 "format_version": self.FORMAT_VERSION,
-                "backup_type": self.BACKUP_TYPE,
+                "backup_type": backup_type,
                 "created_at": datetime.now(UTC).isoformat(),
                 "database_archive_path": database_archive_path,
                 "apps_archive_path": apps_archive_path,
                 "config_archive_paths": config_archive_paths,
                 "checksums": checksums,
             }
+            if volumes is not None:
+                manifest["volumes"] = volumes
+
             (stage_root / self.MANIFEST_PATH).write_text(
                 json.dumps(manifest, indent=2, sort_keys=True),
                 encoding="utf-8",
             )
-
             self._pack_tar_gz(stage_root, archive_path)
 
         return archive_path
@@ -86,7 +99,7 @@ class BackupService:
         target.unlink()
 
     def restore_backup(self, archive_path: Path) -> dict[str, Any]:
-        """Restore config files and DB snapshot from one backup archive."""
+        """Restore config files and optional Docker volumes from one backup archive."""
         if not archive_path.exists() or not archive_path.is_file():
             raise ValueError("Backup archive not found")
 
@@ -102,6 +115,7 @@ class BackupService:
                 "database": False,
                 "apps_dir": False,
                 "config_files": [],
+                "volumes": [],
             }
 
             database_archive_path = str(manifest.get("database_archive_path") or "").strip()
@@ -137,9 +151,12 @@ class BackupService:
                 restored_config_files.append(str(target))
             restored["config_files"] = restored_config_files
 
+            if manifest.get("backup_type") == self.BACKUP_TYPE_FULL:
+                restored["volumes"] = self._restore_volumes(extract_root, manifest)
+
             return {
                 "status": "ok",
-                "message": "Config backup restored successfully",
+                "message": "Backup restored successfully",
                 "restored": restored,
             }
 
@@ -158,7 +175,7 @@ class BackupService:
                 break
 
         if not db_fragment:
-            raise ValueError("Only sqlite DATABASE_URL is supported by config backup")
+            raise ValueError("Only sqlite DATABASE_URL is supported by backup")
 
         candidate = Path(db_fragment).expanduser()
         if candidate.is_absolute():
@@ -228,6 +245,129 @@ class BackupService:
             archived.append(rel_path)
         return archived
 
+    def _stage_volumes(self, stage_root: Path, checksums: dict[str, str]) -> dict[str, Any]:
+        try:
+            client = docker.from_env()
+        except DockerException as exc:
+            raise ValueError(f"Docker unavailable for volume backup: {exc}") from exc
+
+        volumes_payload: list[dict[str, Any]] = []
+        try:
+            for volume in client.volumes.list():
+                name = str(getattr(volume, "name", "")).strip()
+                if not name or "/" in name:
+                    continue
+
+                mountpoint_raw = str(volume.attrs.get("Mountpoint", "")).strip()
+                mountpoint = Path(mountpoint_raw)
+                if not mountpoint_raw or not mountpoint.exists() or not mountpoint.is_dir():
+                    raise ValueError(f"Volume mountpoint not accessible: {name}")
+
+                target_rel = Path("volumes") / name
+                target_dir = stage_root / target_rel
+                if target_dir.exists():
+                    shutil.rmtree(target_dir)
+                shutil.copytree(mountpoint, target_dir)
+
+                for file in target_dir.rglob("*"):
+                    if file.is_file():
+                        rel = file.relative_to(stage_root).as_posix()
+                        checksums[rel] = self._sha256(file)
+
+                volumes_payload.append(
+                    {
+                        "name": name,
+                        "driver": str(volume.attrs.get("Driver", "local") or "local"),
+                        "labels": volume.attrs.get("Labels") or {},
+                        "archive_path": target_rel.as_posix(),
+                    }
+                )
+        except APIError as exc:
+            raise ValueError(f"Docker API error during volume backup: {exc.explanation}") from exc
+        except OSError as exc:
+            raise ValueError(f"Failed to backup Docker volumes: {exc}") from exc
+        finally:
+            client.close()
+
+        return {
+            "items": volumes_payload,
+        }
+
+    def _restore_volumes(self, extract_root: Path, manifest: dict[str, Any]) -> list[str]:
+        volumes_section = manifest.get("volumes")
+        if not isinstance(volumes_section, dict):
+            raise ValueError("Backup manifest is missing volume metadata")
+
+        items = volumes_section.get("items")
+        if not isinstance(items, list):
+            raise ValueError("Backup volume metadata is invalid")
+        if not items:
+            return []
+
+        try:
+            client = docker.from_env()
+        except DockerException as exc:
+            raise ValueError(f"Docker unavailable for volume restore: {exc}") from exc
+
+        restored_names: list[str] = []
+        try:
+            for item in items:
+                if not isinstance(item, dict):
+                    raise ValueError("Backup volume item is invalid")
+
+                name = str(item.get("name", "")).strip()
+                if not name or "/" in name:
+                    raise ValueError("Backup contains invalid volume name")
+
+                driver = str(item.get("driver", "local") or "local").strip() or "local"
+                labels = item.get("labels")
+                labels_payload = labels if isinstance(labels, dict) else {}
+                archive_rel = str(item.get("archive_path", "")).strip()
+                if not archive_rel:
+                    raise ValueError(f"Missing volume archive path for {name}")
+
+                source_dir = (extract_root / archive_rel).resolve()
+                if not source_dir.is_relative_to(extract_root.resolve()):
+                    raise ValueError(f"Unsafe archive path for volume {name}")
+                if not source_dir.exists() or not source_dir.is_dir():
+                    raise ValueError(f"Missing archived data for volume {name}")
+
+                try:
+                    volume = client.volumes.get(name)
+                except NotFound:
+                    volume = client.volumes.create(name=name, driver=driver, labels=labels_payload)
+
+                mountpoint_raw = str(volume.attrs.get("Mountpoint", "")).strip()
+                mountpoint = Path(mountpoint_raw)
+                if not mountpoint_raw or not mountpoint.exists() or not mountpoint.is_dir():
+                    raise ValueError(f"Cannot access mountpoint for volume {name}")
+
+                self._replace_directory_contents(source_dir, mountpoint)
+                restored_names.append(name)
+        except APIError as exc:
+            raise ValueError(f"Docker API error during volume restore: {exc.explanation}") from exc
+        except OSError as exc:
+            raise ValueError(f"Failed to restore Docker volumes: {exc}") from exc
+        finally:
+            client.close()
+
+        return restored_names
+
+    @staticmethod
+    def _replace_directory_contents(source: Path, destination: Path) -> None:
+        for child in destination.iterdir():
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink(missing_ok=True)
+
+        for child in source.iterdir():
+            target = destination / child.name
+            if child.is_dir() and not child.is_symlink():
+                shutil.copytree(child, target)
+            else:
+                shutil.copy2(child, target)
+
     @staticmethod
     def _sha256(path: Path) -> str:
         digest = hashlib.sha256()
@@ -249,7 +389,6 @@ class BackupService:
     @staticmethod
     def _extract_tar_safely(archive_path: Path, destination: Path) -> None:
         destination_abs = destination.resolve()
-
         with tarfile.open(archive_path, "r:*") as tar:
             members = tar.getmembers()
             for member in members:
@@ -274,11 +413,15 @@ class BackupService:
             raise ValueError("Backup manifest has invalid structure")
         if payload.get("format_version") != self.FORMAT_VERSION:
             raise ValueError("Backup format version is not supported")
-        if payload.get("backup_type") != self.BACKUP_TYPE:
+
+        backup_type = payload.get("backup_type")
+        if backup_type not in {self.BACKUP_TYPE_CONFIG_ONLY, self.BACKUP_TYPE_FULL}:
             raise ValueError("Backup type is not supported")
+
         checksums = payload.get("checksums")
         if not isinstance(checksums, dict):
             raise ValueError("Backup manifest is missing checksums")
+
         return payload
 
     def _verify_checksums(self, extract_root: Path, checksums: dict[str, Any]) -> None:
