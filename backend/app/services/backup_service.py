@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
 import tarfile
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -18,6 +19,7 @@ import docker
 from docker.errors import APIError, DockerException, NotFound
 
 from app.config import settings
+from app.services.marketplace_service import _deploy_with_docker_sdk, get_template
 
 
 class BackupService:
@@ -157,9 +159,21 @@ class BackupService:
             if manifest.get("backup_type") == self.BACKUP_TYPE_FULL:
                 restored["volumes"] = self._restore_volumes(extract_root, manifest)
 
+            marketplace_restore = {"restored": [], "errors": []}
+            if restored["database"] and restored["apps_dir"]:
+                db_target = self._resolve_database_path()
+                marketplace_restore = self._restore_marketplace_apps_from_backup_database(db_target)
+            restored["marketplace_apps"] = marketplace_restore["restored"]
+            if marketplace_restore["errors"]:
+                restored["marketplace_app_errors"] = marketplace_restore["errors"]
+
+            message = "Backup restored successfully"
+            if marketplace_restore["errors"]:
+                message = "Backup restored with warnings"
+
             return {
                 "status": "ok",
-                "message": "Backup restored successfully",
+                "message": message,
                 "restored": restored,
             }
 
@@ -370,6 +384,152 @@ class BackupService:
             client.close()
 
         return restored_names
+
+    def _restore_marketplace_apps_from_backup_database(
+        self, database_path: Path
+    ) -> dict[str, list[str]]:
+        if not database_path.exists() or not database_path.is_file():
+            return {"restored": [], "errors": ["Marketplace restore skipped: database not found"]}
+
+        app_rows = self._read_marketplace_app_rows(database_path)
+        if not app_rows:
+            return {"restored": [], "errors": []}
+
+        restored: list[str] = []
+        errors: list[str] = []
+        for app_name, template_id, host_port in app_rows:
+            app_dir = self._apps_dir() / app_name
+            compose_path = app_dir / "docker-compose.yml"
+            if not app_dir.exists() or not app_dir.is_dir():
+                errors.append(f"Skipped {app_name}: app directory not found")
+                continue
+            if not compose_path.exists() or not compose_path.is_file():
+                errors.append(f"Skipped {app_name}: compose file not found")
+                continue
+
+            try:
+                proc = subprocess.run(
+                    ["docker", "compose", "-f", str(compose_path), "up", "-d"],
+                    cwd=str(app_dir),
+                    capture_output=True,
+                    text=True,
+                    timeout=180,
+                    check=False,
+                )
+                if proc.returncode != 0:
+                    stderr = (
+                        proc.stderr.strip()
+                        or proc.stdout.strip()
+                        or "Unknown docker compose error"
+                    )
+                    errors.append(f"Failed to restore app {app_name}: {stderr}")
+                    continue
+                restored.append(app_name)
+                continue
+            except OSError as exc:
+                if exc.errno != 2:
+                    errors.append(f"Failed to restore app {app_name}: {exc}")
+                    continue
+            except subprocess.TimeoutExpired:
+                errors.append(f"Failed to restore app {app_name}: docker compose restore timed out")
+                continue
+
+            try:
+                template = get_template(template_id)
+            except ValueError as exc:
+                errors.append(f"Failed to restore app {app_name}: {exc}")
+                continue
+
+            env = self._read_env_file(app_dir / ".env")
+            volumes = self._parse_named_volume_specs(compose_path)
+            try:
+                _deploy_with_docker_sdk(
+                    template=template,
+                    app_name=app_name,
+                    host_port=host_port,
+                    env=env,
+                    volumes=volumes,
+                )
+                restored.append(app_name)
+            except ValueError as exc:
+                errors.append(f"Failed to restore app {app_name}: {exc}")
+
+        return {"restored": restored, "errors": errors}
+
+    @staticmethod
+    def _read_marketplace_app_rows(database_path: Path) -> list[tuple[str, str, int]]:
+        query = """
+        SELECT app_name, template_id, host_port
+        FROM apps
+        WHERE app_name IS NOT NULL AND template_id IS NOT NULL AND host_port IS NOT NULL
+        ORDER BY id ASC
+        """
+        try:
+            with sqlite3.connect(str(database_path)) as conn:
+                rows = conn.execute(query).fetchall()
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc).lower():
+                return []
+            raise
+
+        payload: list[tuple[str, str, int]] = []
+        for app_name, template_id, host_port in rows:
+            name = str(app_name or "").strip()
+            template = str(template_id or "").strip()
+            if not name or not template:
+                continue
+            try:
+                port = int(host_port)
+            except (TypeError, ValueError):
+                continue
+            payload.append((name, template, port))
+        return payload
+
+    @staticmethod
+    def _read_env_file(path: Path) -> dict[str, str]:
+        if not path.exists() or not path.is_file():
+            return {}
+        env: dict[str, str] = {}
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, value = stripped.split("=", 1)
+            key = key.strip()
+            if not key:
+                continue
+            env[key] = value.strip()
+        return env
+
+    @staticmethod
+    def _parse_named_volume_specs(compose_path: Path) -> list[dict[str, str]]:
+        if not compose_path.exists() or not compose_path.is_file():
+            return []
+
+        specs: list[dict[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for raw_line in compose_path.read_text(encoding="utf-8").splitlines():
+            stripped = raw_line.strip()
+            if not stripped.startswith("-"):
+                continue
+
+            entry = stripped[1:].strip().strip("'").strip('"')
+            if ":" not in entry:
+                continue
+            source, target = entry.split(":", 1)
+            source = source.strip()
+            target = target.strip()
+            if not source or not target.startswith("/"):
+                continue
+            if "/" in source or "\\" in source:
+                continue
+
+            key = (source, target)
+            if key in seen:
+                continue
+            seen.add(key)
+            specs.append({"name": source, "mount_path": target})
+        return specs
 
     def _resolve_volume_helper_image(self, client: Any) -> str:
         current_container_id = os.environ.get("HOSTNAME", "").strip()

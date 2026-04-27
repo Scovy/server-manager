@@ -1,5 +1,6 @@
 """Unit tests for backup service volume copy fallbacks."""
 
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -115,3 +116,120 @@ def test_restore_volumes_uses_helper_when_mountpoint_unavailable(tmp_path: Path)
     )
     volume.reload.assert_called_once()
     client.close.assert_called_once()
+
+
+def test_restore_marketplace_apps_runs_compose_up(tmp_path: Path) -> None:
+    service = BackupService()
+    database_path = tmp_path / "homelab.db"
+    with sqlite3.connect(str(database_path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE apps (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                template_id TEXT NOT NULL,
+                app_name TEXT NOT NULL,
+                host_port INTEGER NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO apps(template_id, app_name, host_port)
+            VALUES (?, ?, ?)
+            """,
+            ("gitea", "gitea-restored", 3010),
+        )
+        conn.commit()
+
+    apps_root = tmp_path / "apps"
+    app_dir = apps_root / "gitea-restored"
+    app_dir.mkdir(parents=True, exist_ok=True)
+    (app_dir / "docker-compose.yml").write_text(
+        (
+            "services:\n"
+            "  gitea-restored:\n"
+            "    image: gitea/gitea:latest\n"
+            '    container_name: gitea-restored\n'
+            '    ports:\n      - "3010:3000"\n'
+        ),
+        encoding="utf-8",
+    )
+
+    with (
+        patch.object(service, "_apps_dir", return_value=apps_root),
+        patch("app.services.backup_service.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = "started"
+        mock_run.return_value.stderr = ""
+        result = service._restore_marketplace_apps_from_backup_database(database_path)
+
+    assert result == {"restored": ["gitea-restored"], "errors": []}
+    mock_run.assert_called_once()
+    call_args = mock_run.call_args
+    assert call_args.args[0] == [
+        "docker",
+        "compose",
+        "-f",
+        str(app_dir / "docker-compose.yml"),
+        "up",
+        "-d",
+    ]
+
+
+def test_restore_marketplace_apps_falls_back_to_sdk_without_docker_cli(tmp_path: Path) -> None:
+    service = BackupService()
+    database_path = tmp_path / "homelab.db"
+    with sqlite3.connect(str(database_path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE apps (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                template_id TEXT NOT NULL,
+                app_name TEXT NOT NULL,
+                host_port INTEGER NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO apps(template_id, app_name, host_port)
+            VALUES (?, ?, ?)
+            """,
+            ("gitea", "gitea-restored", 3010),
+        )
+        conn.commit()
+
+    apps_root = tmp_path / "apps"
+    app_dir = apps_root / "gitea-restored"
+    app_dir.mkdir(parents=True, exist_ok=True)
+    (app_dir / "docker-compose.yml").write_text(
+        (
+            "services:\n"
+            "  gitea-restored:\n"
+            "    image: gitea/gitea:latest\n"
+            '    container_name: gitea-restored\n'
+            '    ports:\n      - "3010:3000"\n'
+            '    volumes:\n      - "gitea-data:/data"\n'
+        ),
+        encoding="utf-8",
+    )
+    (app_dir / ".env").write_text("USER_UID=1001\nUSER_GID=1001\n", encoding="utf-8")
+
+    with (
+        patch.object(service, "_apps_dir", return_value=apps_root),
+        patch(
+            "app.services.backup_service.subprocess.run",
+            side_effect=OSError(2, "No such file or directory"),
+        ),
+        patch("app.services.backup_service._deploy_with_docker_sdk") as mock_sdk,
+    ):
+        result = service._restore_marketplace_apps_from_backup_database(database_path)
+
+    assert result == {"restored": ["gitea-restored"], "errors": []}
+    mock_sdk.assert_called_once()
+    call_kwargs = mock_sdk.call_args.kwargs
+    assert call_kwargs["app_name"] == "gitea-restored"
+    assert call_kwargs["host_port"] == 3010
+    assert call_kwargs["env"] == {"USER_UID": "1001", "USER_GID": "1001"}
+    assert call_kwargs["volumes"] == [{"name": "gitea-data", "mount_path": "/data"}]
