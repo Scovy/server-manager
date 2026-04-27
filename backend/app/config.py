@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     DOMAIN: str = "localhost"
     CORS_ORIGINS: str = "http://localhost:5173,http://localhost:3000"
     MARKETPLACE_APPS_DIR: str = "./apps"
+    BACKUP_DIR: str = "./backups"
     CADDY_CONTAINER_NAME: str = "homelab_caddy"
     CADDY_MARKETPLACE_CONFIG_PATH: str = "/etc/caddy/marketplace_apps.caddy"
 

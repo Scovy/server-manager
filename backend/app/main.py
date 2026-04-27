@@ -17,6 +17,7 @@ from app.config import settings
 from app.database import async_session
 from app.routers import (
     auth,
+    backup,
     containers,
     docker_resources,
     domains,
@@ -85,6 +86,7 @@ logging.basicConfig(
 # Include routers
 app.include_router(health.router)
 app.include_router(auth.router)
+app.include_router(backup.router)
 app.include_router(metrics.router)
 app.include_router(containers.router)
 app.include_router(docker_resources.router)

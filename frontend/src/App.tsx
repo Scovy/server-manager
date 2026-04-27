@@ -8,7 +8,7 @@
  * - /docker-resources — Docker volumes and networks management
  * - /marketplace — App marketplace (placeholder)
  * - /domains — Domain and SSL management (placeholder)
- * - /backup — Backup & Restore (placeholder)
+ * - /backup — Backup & Restore
  * - /security — Security & audit log (placeholder)
  * - /settings — Dashboard settings (placeholder)
  */
@@ -25,6 +25,7 @@ import Containers from './pages/Containers';
 import DockerResources from './pages/DockerResources';
 import Marketplace from './pages/Marketplace';
 import Domains from './pages/Domains';
+import Backup from './pages/Backup';
 import Security from './pages/Security';
 import SetupWizard from './pages/SetupWizard';
 
@@ -154,7 +155,7 @@ function AppRoutes() {
             <Route path="/docker-resources" element={<DockerResources />} />
             <Route path="/marketplace" element={<Marketplace />} />
             <Route path="/domains" element={<Domains />} />
-            <Route path="/backup" element={<ComingSoon title="Backup & Restore" />} />
+            <Route path="/backup" element={<Backup />} />
             <Route path="/security" element={<Security />} />
             <Route path="/settings" element={<ComingSoon title="Settings" />} />
           </Route>

@@ -1,6 +1,4 @@
 """Pytest configuration and shared fixtures for backend tests."""
-
-import asyncio
 from collections.abc import AsyncGenerator
 
 import pytest
@@ -11,14 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.database import get_db
 from app.main import app
 from app.models import Base
-
-
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create a single event loop for the entire test session."""
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
 
 
 @pytest_asyncio.fixture
