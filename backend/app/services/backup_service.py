@@ -19,7 +19,11 @@ import docker
 from docker.errors import APIError, DockerException, NotFound
 
 from app.config import settings
-from app.services.marketplace_service import _deploy_with_docker_sdk, get_template
+from app.services.marketplace_service import (
+    MarketplaceVolumeSpec,
+    _deploy_with_docker_sdk,
+    get_template,
+)
 
 
 class BackupService:
@@ -159,7 +163,7 @@ class BackupService:
             if manifest.get("backup_type") == self.BACKUP_TYPE_FULL:
                 restored["volumes"] = self._restore_volumes(extract_root, manifest)
 
-            marketplace_restore = {"restored": [], "errors": []}
+            marketplace_restore: dict[str, list[str]] = {"restored": [], "errors": []}
             if restored["database"] and restored["apps_dir"]:
                 db_target = self._resolve_database_path()
                 marketplace_restore = self._restore_marketplace_apps_from_backup_database(db_target)
@@ -502,11 +506,11 @@ class BackupService:
         return env
 
     @staticmethod
-    def _parse_named_volume_specs(compose_path: Path) -> list[dict[str, str]]:
+    def _parse_named_volume_specs(compose_path: Path) -> list[MarketplaceVolumeSpec]:
         if not compose_path.exists() or not compose_path.is_file():
             return []
 
-        specs: list[dict[str, str]] = []
+        specs: list[MarketplaceVolumeSpec] = []
         seen: set[tuple[str, str]] = set()
         for raw_line in compose_path.read_text(encoding="utf-8").splitlines():
             stripped = raw_line.strip()
@@ -528,7 +532,8 @@ class BackupService:
             if key in seen:
                 continue
             seen.add(key)
-            specs.append({"name": source, "mount_path": target})
+            volume_spec: MarketplaceVolumeSpec = {"name": source, "mount_path": target}
+            specs.append(volume_spec)
         return specs
 
     def _resolve_volume_helper_image(self, client: Any) -> str:
