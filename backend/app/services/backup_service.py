@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
 import tarfile
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -25,6 +27,7 @@ class BackupService:
     FORMAT_VERSION = 1
     BACKUP_TYPE_CONFIG_ONLY = "config-only"
     BACKUP_TYPE_FULL = "full-with-volumes"
+    VOLUME_HELPER_MOUNT_PATH = "/backup-volume"
 
     def __init__(self) -> None:
         self._backend_root = Path(__file__).resolve().parents[2]
@@ -252,6 +255,7 @@ class BackupService:
             raise ValueError(f"Docker unavailable for volume backup: {exc}") from exc
 
         volumes_payload: list[dict[str, Any]] = []
+        helper_image: str | None = None
         try:
             for volume in client.volumes.list():
                 name = str(getattr(volume, "name", "")).strip()
@@ -260,14 +264,24 @@ class BackupService:
 
                 mountpoint_raw = str(volume.attrs.get("Mountpoint", "")).strip()
                 mountpoint = Path(mountpoint_raw)
-                if not mountpoint_raw or not mountpoint.exists() or not mountpoint.is_dir():
-                    raise ValueError(f"Volume mountpoint not accessible: {name}")
-
                 target_rel = Path("volumes") / name
                 target_dir = stage_root / target_rel
                 if target_dir.exists():
                     shutil.rmtree(target_dir)
-                shutil.copytree(mountpoint, target_dir)
+
+                copied = False
+                if mountpoint_raw and mountpoint.exists() and mountpoint.is_dir():
+                    try:
+                        shutil.copytree(mountpoint, target_dir)
+                        copied = True
+                    except OSError:
+                        if target_dir.exists():
+                            shutil.rmtree(target_dir)
+
+                if not copied:
+                    if helper_image is None:
+                        helper_image = self._resolve_volume_helper_image(client)
+                    self._copy_volume_with_helper(client, helper_image, name, target_dir)
 
                 for file in target_dir.rglob("*"):
                     if file.is_file():
@@ -310,6 +324,7 @@ class BackupService:
             raise ValueError(f"Docker unavailable for volume restore: {exc}") from exc
 
         restored_names: list[str] = []
+        helper_image: str | None = None
         try:
             for item in items:
                 if not isinstance(item, dict):
@@ -336,13 +351,16 @@ class BackupService:
                     volume = client.volumes.get(name)
                 except NotFound:
                     volume = client.volumes.create(name=name, driver=driver, labels=labels_payload)
+                volume.reload()
 
                 mountpoint_raw = str(volume.attrs.get("Mountpoint", "")).strip()
                 mountpoint = Path(mountpoint_raw)
-                if not mountpoint_raw or not mountpoint.exists() or not mountpoint.is_dir():
-                    raise ValueError(f"Cannot access mountpoint for volume {name}")
-
-                self._replace_directory_contents(source_dir, mountpoint)
+                if mountpoint_raw and mountpoint.exists() and mountpoint.is_dir():
+                    self._replace_directory_contents(source_dir, mountpoint)
+                else:
+                    if helper_image is None:
+                        helper_image = self._resolve_volume_helper_image(client)
+                    self._restore_volume_with_helper(client, helper_image, name, source_dir)
                 restored_names.append(name)
         except APIError as exc:
             raise ValueError(f"Docker API error during volume restore: {exc.explanation}") from exc
@@ -352,6 +370,171 @@ class BackupService:
             client.close()
 
         return restored_names
+
+    def _resolve_volume_helper_image(self, client: Any) -> str:
+        current_container_id = os.environ.get("HOSTNAME", "").strip()
+        if current_container_id:
+            try:
+                current_container = client.containers.get(current_container_id)
+                image_id = str(getattr(current_container.image, "id", "")).strip()
+                if image_id:
+                    return image_id
+            except (APIError, NotFound):
+                pass
+
+        try:
+            for container in client.containers.list():
+                image_id = str(getattr(container.image, "id", "")).strip()
+                if image_id:
+                    return image_id
+        except APIError:
+            pass
+
+        try:
+            for image in client.images.list():
+                image_id = str(getattr(image, "id", "")).strip()
+                if image_id:
+                    return image_id
+        except APIError:
+            pass
+
+        raise ValueError("Could not determine a helper Docker image for volume transfer")
+
+    def _copy_volume_with_helper(
+        self,
+        client: Any,
+        helper_image: str,
+        volume_name: str,
+        destination: Path,
+    ) -> None:
+        helper = self._create_volume_helper_container(
+            client=client,
+            helper_image=helper_image,
+            volume_name=volume_name,
+            mount_mode="ro",
+        )
+        try:
+            archive_stream, _ = helper.get_archive(self.VOLUME_HELPER_MOUNT_PATH)
+            self._extract_archive_stream_to_directory(archive_stream, destination)
+        except APIError as exc:
+            raise ValueError(
+                f"Docker API error while reading volume {volume_name}: {exc.explanation}"
+            ) from exc
+        finally:
+            self._remove_helper_container(helper)
+
+    def _restore_volume_with_helper(
+        self,
+        client: Any,
+        helper_image: str,
+        volume_name: str,
+        source_dir: Path,
+    ) -> None:
+        helper = self._create_volume_helper_container(
+            client=client,
+            helper_image=helper_image,
+            volume_name=volume_name,
+            mount_mode="rw",
+        )
+        try:
+            result = helper.exec_run(
+                [
+                    "sh",
+                    "-lc",
+                    (
+                        "rm -rf "
+                        f"{self.VOLUME_HELPER_MOUNT_PATH}/* "
+                        f"{self.VOLUME_HELPER_MOUNT_PATH}/.[!.]* "
+                        f"{self.VOLUME_HELPER_MOUNT_PATH}/..?*"
+                    ),
+                ]
+            )
+            if result.exit_code != 0:
+                stderr = (result.output or b"").decode("utf-8", errors="ignore").strip()
+                raise ValueError(
+                    f"Failed to clear data before restoring volume {volume_name}: "
+                    f"{stderr or 'unknown error'}"
+                )
+
+            archive_payload = self._create_tar_payload(source_dir)
+            accepted = helper.put_archive(self.VOLUME_HELPER_MOUNT_PATH, archive_payload)
+            if not accepted:
+                raise ValueError(f"Failed to restore data into volume {volume_name}")
+        except APIError as exc:
+            raise ValueError(
+                f"Docker API error while restoring volume {volume_name}: {exc.explanation}"
+            ) from exc
+        finally:
+            self._remove_helper_container(helper)
+
+    def _create_volume_helper_container(
+        self,
+        client: Any,
+        helper_image: str,
+        volume_name: str,
+        mount_mode: str,
+    ) -> Any:
+        try:
+            helper = client.containers.create(
+                image=helper_image,
+                command=["sh", "-lc", "while true; do sleep 3600; done"],
+                volumes={
+                    volume_name: {
+                        "bind": self.VOLUME_HELPER_MOUNT_PATH,
+                        "mode": mount_mode,
+                    }
+                },
+                detach=True,
+            )
+            helper.start()
+            return helper
+        except APIError as exc:
+            raise ValueError(
+                f"Docker API error while preparing helper container for {volume_name}: "
+                f"{exc.explanation}"
+            ) from exc
+
+    @staticmethod
+    def _remove_helper_container(container: Any) -> None:
+        try:
+            container.remove(force=True)
+        except (APIError, DockerException):
+            pass
+
+    def _extract_archive_stream_to_directory(
+        self, archive_stream: Iterable[bytes], destination: Path
+    ) -> None:
+        with TemporaryDirectory(prefix="backup-volume-extract-") as tmp:
+            tmp_root = Path(tmp)
+            archive_path = tmp_root / "volume.tar"
+            with archive_path.open("wb") as handle:
+                for chunk in archive_stream:
+                    handle.write(chunk)
+
+            extract_root = tmp_root / "extracted"
+            extract_root.mkdir(parents=True, exist_ok=True)
+            self._extract_tar_safely(archive_path, extract_root)
+
+            source_root = self._resolve_extracted_root(extract_root)
+            if destination.exists():
+                shutil.rmtree(destination)
+            shutil.copytree(source_root, destination)
+
+    @staticmethod
+    def _resolve_extracted_root(extract_root: Path) -> Path:
+        children = list(extract_root.iterdir())
+        if len(children) == 1 and children[0].is_dir():
+            return children[0]
+        return extract_root
+
+    @staticmethod
+    def _create_tar_payload(source_dir: Path) -> bytes:
+        with TemporaryDirectory(prefix="backup-volume-pack-") as tmp:
+            archive_path = Path(tmp) / "volume.tar"
+            with tarfile.open(archive_path, "w") as tar:
+                for item in sorted(source_dir.iterdir()):
+                    tar.add(item, arcname=item.name, recursive=True)
+            return archive_path.read_bytes()
 
     @staticmethod
     def _replace_directory_contents(source: Path, destination: Path) -> None:
