@@ -401,15 +401,15 @@ class BackupService:
 
         restored: list[str] = []
         errors: list[str] = []
-        for app_name, template_id, host_port in app_rows:
-            app_dir = self._apps_dir() / app_name
-            compose_path = app_dir / "docker-compose.yml"
-            if not app_dir.exists() or not app_dir.is_dir():
-                errors.append(f"Skipped {app_name}: app directory not found")
-                continue
-            if not compose_path.exists() or not compose_path.is_file():
+        for row in app_rows:
+            app_name = row["app_name"]
+            template_id = row["template_id"]
+            host_port = row["host_port"]
+            compose_path = self._resolve_marketplace_compose_path(row)
+            if compose_path is None:
                 errors.append(f"Skipped {app_name}: compose file not found")
                 continue
+            app_dir = compose_path.parent
 
             try:
                 proc = subprocess.run(
@@ -461,33 +461,87 @@ class BackupService:
         return {"restored": restored, "errors": errors}
 
     @staticmethod
-    def _read_marketplace_app_rows(database_path: Path) -> list[tuple[str, str, int]]:
-        query = """
-        SELECT app_name, template_id, host_port
-        FROM apps
-        WHERE app_name IS NOT NULL AND template_id IS NOT NULL AND host_port IS NOT NULL
-        ORDER BY id ASC
-        """
+    def _read_marketplace_app_rows(database_path: Path) -> list[dict[str, Any]]:
         try:
             with sqlite3.connect(str(database_path)) as conn:
+                table_columns = {
+                    str(row[1]).strip().lower()
+                    for row in conn.execute("PRAGMA table_info(apps)").fetchall()
+                }
+                if not table_columns:
+                    return []
+
+                select_columns = ["app_name", "template_id", "host_port"]
+                has_app_dir = "app_dir" in table_columns
+                has_compose_path = "compose_path" in table_columns
+                if has_app_dir:
+                    select_columns.append("app_dir")
+                if has_compose_path:
+                    select_columns.append("compose_path")
+
+                query = f"""
+                SELECT {", ".join(select_columns)}
+                FROM apps
+                WHERE app_name IS NOT NULL AND template_id IS NOT NULL AND host_port IS NOT NULL
+                ORDER BY id ASC
+                """
                 rows = conn.execute(query).fetchall()
         except sqlite3.OperationalError as exc:
             if "no such table" in str(exc).lower():
                 return []
             raise
 
-        payload: list[tuple[str, str, int]] = []
-        for app_name, template_id, host_port in rows:
-            name = str(app_name or "").strip()
-            template = str(template_id or "").strip()
+        payload: list[dict[str, Any]] = []
+        for row in rows:
+            app_name = row[0]
+            template_id = row[1]
+            host_port = row[2]
+            app_dir = row[3] if has_app_dir else None
+            compose_path = row[4] if has_compose_path else None
+
+            name = str(app_name).strip()
+            template = str(template_id).strip()
             if not name or not template:
                 continue
             try:
                 port = int(host_port)
             except (TypeError, ValueError):
                 continue
-            payload.append((name, template, port))
+            payload.append(
+                {
+                    "app_name": name,
+                    "template_id": template,
+                    "host_port": port,
+                    "app_dir": str(app_dir or "").strip() or None,
+                    "compose_path": str(compose_path or "").strip() or None,
+                }
+            )
         return payload
+
+    def _resolve_marketplace_compose_path(self, row: dict[str, Any]) -> Path | None:
+        app_name = str(row.get("app_name", "")).strip()
+        app_dir_raw = str(row.get("app_dir", "")).strip()
+        compose_path_raw = str(row.get("compose_path", "")).strip()
+
+        candidates: list[Path] = []
+        if compose_path_raw:
+            candidates.append(Path(compose_path_raw).expanduser())
+
+        if app_dir_raw:
+            candidates.append(Path(app_dir_raw).expanduser() / "docker-compose.yml")
+
+        if app_name:
+            candidates.append(self._apps_dir() / app_name / "docker-compose.yml")
+
+        seen: set[str] = set()
+        for candidate in candidates:
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            if candidate.exists() and candidate.is_file():
+                return candidate
+        return None
 
     @staticmethod
     def _read_env_file(path: Path) -> dict[str, str]:
