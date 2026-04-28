@@ -48,7 +48,8 @@ class Settings(BaseSettings):
     CADDY_MARKETPLACE_CONFIG_PATH: str = "/etc/caddy/marketplace_apps.caddy"
 
     # Metrics
-    METRICS_WS_INTERVAL_SECONDS: float = 1.0
+    METRICS_WS_INTERVAL_SECONDS: float = 0.5
+    METRICS_CONTAINER_REFRESH_SECONDS: float = 3.0
 
     @property
     def cors_origins_list(self) -> list[str]:

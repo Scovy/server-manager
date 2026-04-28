@@ -1,7 +1,7 @@
 """Metrics router — WebSocket stream, historical data, and alert configuration.
 
 Endpoints:
-    GET  /ws/metrics              WebSocket broadcasting live MetricsSnapshot every 1 s
+    GET  /ws/metrics              WebSocket broadcasting live MetricsSnapshot
     GET  /api/metrics/history     Historical data with optional time-range and interval filters
     GET  /api/metrics/alerts      Current alert threshold configuration
     PUT  /api/metrics/alerts      Update alert thresholds and optional webhook URL
@@ -10,6 +10,7 @@ Endpoints:
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime
 from typing import Any
 
@@ -22,7 +23,7 @@ from app.config import settings
 from app.database import get_db
 from app.models.metrics_history import MetricsHistory
 from app.models.setting import Setting
-from app.services.metrics_service import MetricsSnapshot, metrics_service
+from app.services.metrics_service import ContainerStat, MetricsSnapshot, metrics_service
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ router = APIRouter(tags=["metrics"])
 
 # Seconds between WebSocket metric pushes
 WS_INTERVAL = settings.METRICS_WS_INTERVAL_SECONDS
+CONTAINER_REFRESH_INTERVAL = settings.METRICS_CONTAINER_REFRESH_SECONDS
 
 # Settings key for alert configuration
 ALERT_CONFIG_KEY = "alert_config"
@@ -139,6 +141,9 @@ async def ws_metrics(websocket: WebSocket, db: AsyncSession = Depends(get_db)) -
 
     alert_config = await _get_alert_config(db)
     alert_cooldown: dict[str, datetime] = {}  # metric → last alert time
+    last_containers: list[ContainerStat] = []
+    last_container_refresh = 0.0
+    container_refresh_task: asyncio.Task[MetricsSnapshot] | None = None
 
     try:
         # Send host-level metrics immediately so dashboard cards render on refresh
@@ -147,7 +152,31 @@ async def ws_metrics(websocket: WebSocket, db: AsyncSession = Depends(get_db)) -
         await websocket.send_text(initial_snapshot.model_dump_json())
 
         while True:
-            snapshot = await metrics_service.get_snapshot()
+            now_monotonic = time.monotonic()
+
+            if container_refresh_task and container_refresh_task.done():
+                try:
+                    container_snapshot = container_refresh_task.result()
+                    last_containers = container_snapshot.containers
+                    last_container_refresh = now_monotonic
+                except Exception as e:
+                    logger.debug("Container refresh task failed: %s", e)
+                finally:
+                    container_refresh_task = None
+
+            if (
+                container_refresh_task is None
+                and (
+                    not last_containers
+                    or (now_monotonic - last_container_refresh) >= CONTAINER_REFRESH_INTERVAL
+                )
+            ):
+                container_refresh_task = asyncio.create_task(
+                    metrics_service.get_snapshot(include_containers=True)
+                )
+
+            snapshot = await metrics_service.get_snapshot(include_containers=False)
+            snapshot = snapshot.model_copy(update={"containers": last_containers})
 
             # Check alerts (max once per 5 min per metric to avoid spam)
             now = datetime.utcnow()
@@ -167,6 +196,9 @@ async def ws_metrics(websocket: WebSocket, db: AsyncSession = Depends(get_db)) -
     except Exception as e:
         logger.error("WebSocket error: %s", e)
         await websocket.close()
+    finally:
+        if container_refresh_task and not container_refresh_task.done():
+            container_refresh_task.cancel()
 
 
 # ── GET /api/metrics/history ───────────────────────────────────────────────────
