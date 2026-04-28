@@ -19,12 +19,12 @@ async def test_marketplace_list_returns_templates(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_marketplace_filter_by_category(client: AsyncClient):
-    res = await client.get("/api/marketplace?category=dev")
+    res = await client.get("/api/marketplace?category=Dev")
 
     assert res.status_code == 200
     payload = res.json()
     assert len(payload) >= 1
-    assert all(item["category"] == "dev" for item in payload)
+    assert all(item["category"] == "Dev" for item in payload)
 
 
 @pytest.mark.asyncio
