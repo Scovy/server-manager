@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     CADDY_MARKETPLACE_CONFIG_PATH: str = "/etc/caddy/marketplace_apps.caddy"
 
     # Metrics
-    METRICS_WS_INTERVAL_SECONDS: float = 0.5
+    METRICS_WS_INTERVAL_SECONDS: float = 0.8
     METRICS_CONTAINER_REFRESH_SECONDS: float = 3.0
 
     @property
