@@ -68,6 +68,6 @@ describe('Dashboard Page', () => {
     expect(screen.getByText('CPU Usage')).toBeInTheDocument();
     expect(screen.getByText('Memory')).toBeInTheDocument();
     expect(screen.getByText('Disk Usage')).toBeInTheDocument();
-    expect(screen.getByText('Network (Sent)')).toBeInTheDocument();
+    expect(screen.queryByText('Network (Sent)')).not.toBeInTheDocument();
   });
 });

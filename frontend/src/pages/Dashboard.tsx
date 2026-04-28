@@ -2,22 +2,63 @@
  * Dashboard page — The main overview with live system metrics.
  *
  * Uses the `useMetricsWS` hook to connect to the backend and displays:
- * - 4 MetricCard components for current KPI values
- * - 4 MetricChart AreaCharts for the rolling history buffer
+ * - 3 MetricCard components for current KPI values
+ * - 4 charts for the rolling history buffer
  * - ContainerStatsTable for running Docker container metrics
  * - AlertConfigPanel to configure threshold webhooks
  */
 
 import { useEffect, useState } from 'react';
 import { useMetricsWS } from '../hooks/useMetricsWS';
+import type { ChartPoint } from '../hooks/useMetricsWS';
 import { fetchMetricsHistory } from '../api/metricsApi';
 import type { HistoryPoint } from '../types/metrics';
 
 import MetricCard from '../components/MetricCard';
 import MetricChart from '../components/MetricChart';
+import NetworkChart from '../components/NetworkChart';
 import ContainerStatsTable from '../components/ContainerStatsTable';
 import AlertConfigPanel from '../components/AlertConfigPanel';
 import './Dashboard.css';
+
+const MEGABYTE = 1024 * 1024;
+
+function mapHistoryPoint(pt: HistoryPoint): ChartPoint {
+  const ts = new Date(pt.timestamp).getTime();
+  return {
+    ts,
+    time: new Date(ts).toLocaleTimeString(),
+    cpu: pt.cpu_percent,
+    ram: pt.ram_percent,
+    ram_used_gb: pt.ram_used_mb / 1024,
+    disk: pt.disk_percent,
+    net_sent: pt.net_bytes_sent,
+    net_recv: pt.net_bytes_recv,
+  };
+}
+
+function toNetworkThroughput(points: ChartPoint[]): Array<{
+  time: string;
+  sent_rate_mb_s: number;
+  recv_rate_mb_s: number;
+}> {
+  return points.map((point, index) => {
+    if (index === 0) {
+      return { time: point.time, sent_rate_mb_s: 0, recv_rate_mb_s: 0 };
+    }
+
+    const prev = points[index - 1];
+    const dtSeconds = Math.max((point.ts - prev.ts) / 1000, 1);
+    const sentDelta = Math.max(0, point.net_sent - prev.net_sent);
+    const recvDelta = Math.max(0, point.net_recv - prev.net_recv);
+
+    return {
+      time: point.time,
+      sent_rate_mb_s: sentDelta / MEGABYTE / dtSeconds,
+      recv_rate_mb_s: recvDelta / MEGABYTE / dtSeconds,
+    };
+  });
+}
 
 export default function Dashboard() {
   const { current, history: wsHistory, status } = useMetricsWS();
@@ -34,16 +75,10 @@ export default function Dashboard() {
   // In a production app you'd deduplicate these based on timestamp,
   // but for the MVP simply concatenating or using WS history if available is fine.
   const chartData = wsHistory.length > 5 ? wsHistory : [
-    ...dbHistory.map((pt) => ({
-      time: new Date(pt.timestamp).toLocaleTimeString(),
-      cpu: pt.cpu_percent,
-      ram: pt.ram_percent,
-      disk: pt.disk_percent,
-      net_sent: pt.net_bytes_sent,
-      net_recv: pt.net_bytes_recv,
-    })),
+    ...dbHistory.map(mapHistoryPoint),
     ...wsHistory,
   ].slice(-60);
+  const networkData = toNetworkThroughput(chartData);
 
   // Connection badge styling
   let badgeClass = 'badge-warning';
@@ -101,14 +136,6 @@ export default function Dashboard() {
           warnThreshold={85}
           dangerThreshold={95}
         />
-        <MetricCard
-          icon="🌐"
-          label="Network (Sent)"
-          value={current ? current.net_bytes_sent / (1024 * 1024) : null}
-          unit=" MB"
-          warnThreshold={999999} // Never red
-          dangerThreshold={999999}
-        />
       </div>
 
       {/* ── Metric Charts ─────────────────────────────────────────────────── */}
@@ -124,10 +151,9 @@ export default function Dashboard() {
         <MetricChart
           title="Memory History"
           data={chartData}
-          dataKey="ram"
+          dataKey="ram_used_gb"
           color="var(--color-accent)"
-          unit="%"
-          yMax={100}
+          unit=" GB"
         />
         <MetricChart
           title="Disk Space History"
@@ -137,13 +163,7 @@ export default function Dashboard() {
           unit="%"
           yMax={100}
         />
-        <MetricChart
-          title="Network Sent"
-          data={chartData.map(d => ({ ...d, net_mb: d.net_sent / (1024 * 1024) }))}
-          dataKey="net_mb"
-          color="var(--color-success)"
-          unit=" MB"
-        />
+        <NetworkChart title="Network Throughput" data={networkData} />
       </div>
 
       {/* ── Container Stats & Settings ────────────────────────────────────── */}

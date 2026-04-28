@@ -21,13 +21,14 @@ import { useEffect, useState } from 'react';
 import type { MetricsSnapshot, WSStatus } from '../types/metrics';
 
 export interface ChartPoint {
+  ts: number;
   time: string;
   cpu: number;
   ram: number;
+  ram_used_gb: number;
   disk: number;
   net_sent: number;
   net_recv: number;
-  net_mb?: number;
 }
 
 interface UseMetricsWSResult {
@@ -141,11 +142,14 @@ function connectSocket(): void {
     try {
       const snapshot = JSON.parse(event.data as string) as MetricsSnapshot;
       sharedCurrent = snapshot;
+      const now = Date.now();
 
       const point: ChartPoint = {
-        time: new Date().toLocaleTimeString(),
+        ts: now,
+        time: new Date(now).toLocaleTimeString(),
         cpu: snapshot.cpu_percent,
         ram: snapshot.ram_percent,
+        ram_used_gb: snapshot.ram_used_mb / 1024,
         disk: snapshot.disk_percent,
         net_sent: snapshot.net_bytes_sent,
         net_recv: snapshot.net_bytes_recv,
