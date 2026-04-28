@@ -8,6 +8,8 @@ export interface DockerVolume {
   size_bytes: number;
   ref_count: number;
   in_use: boolean;
+  app_hint: string;
+  used_by: string[];
 }
 
 export interface DockerDisk {

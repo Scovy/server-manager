@@ -63,7 +63,7 @@
 .docker-resource-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 720px;
+  min-width: 860px;
 }
 
 .docker-resource-table th,
@@ -95,6 +95,10 @@
   max-width: 340px;
 }
 
+.docker-resource-table__truncate--owner {
+  max-width: 260px;
+}
+
 .docker-resource-table__truncate--mountpoint {
   max-width: 560px;
 }
@@ -114,6 +118,7 @@
   }
 
   .docker-resource-table__truncate--name,
+  .docker-resource-table__truncate--owner,
   .docker-resource-table__truncate--mountpoint,
   .docker-resource-table__truncate--device {
     max-width: 220px;

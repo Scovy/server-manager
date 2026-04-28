@@ -352,6 +352,22 @@ class DockerService:
         """List docker volumes with useful metadata for the UI."""
         volumes = self.client.volumes.list()
         rows = [self._serialize_volume(volume) for volume in volumes]
+        by_name = {str(row.get("name", "")): row for row in rows}
+
+        for container in self.client.containers.list(all=True):
+            owner = self._volume_owner_label(container)
+            mounts = container.attrs.get("Mounts", []) if hasattr(container, "attrs") else []
+            for mount in mounts:
+                if mount.get("Type") != "volume":
+                    continue
+                volume_name = str(mount.get("Name", ""))
+                if not volume_name or volume_name not in by_name:
+                    continue
+
+                used_by = by_name[volume_name].setdefault("used_by", [])
+                if isinstance(used_by, list) and owner not in used_by:
+                    used_by.append(owner)
+
         return [row for row in rows if not self._is_hidden_volume(row)]
 
     def create_volume(
@@ -439,18 +455,39 @@ class DockerService:
     @staticmethod
     def _serialize_volume(volume: Any) -> dict[str, Any]:
         usage = volume.attrs.get("UsageData") or {}
+        labels = volume.attrs.get("Labels") or {}
         ref_count = int(usage.get("RefCount", 0))
+        compose_project = str(labels.get("com.docker.compose.project", "") or "")
+        compose_volume = str(labels.get("com.docker.compose.volume", "") or "")
+        app_hint = (
+            f"{compose_project}/{compose_volume}"
+            if compose_project and compose_volume
+            else compose_project
+        )
         return {
             "name": volume.name,
             "driver": volume.attrs.get("Driver", ""),
             "mountpoint": volume.attrs.get("Mountpoint", ""),
             "scope": volume.attrs.get("Scope", ""),
-            "labels": volume.attrs.get("Labels") or {},
+            "labels": labels,
             "created_at": volume.attrs.get("CreatedAt", ""),
             "size_bytes": int(usage.get("Size", 0) or 0),
             "ref_count": ref_count,
             "in_use": ref_count > 0,
+            "app_hint": app_hint,
+            "used_by": [],
         }
+
+    @staticmethod
+    def _volume_owner_label(container: Any) -> str:
+        labels = container.attrs.get("Config", {}).get("Labels", {}) or {}
+        project = str(labels.get("com.docker.compose.project", "") or "")
+        service = str(labels.get("com.docker.compose.service", "") or "")
+        if project and service:
+            return f"{project}/{service}"
+        if service:
+            return service
+        return str(getattr(container, "name", "") or "unknown")
 
     @classmethod
     def _is_hidden_volume(cls, volume: dict[str, Any]) -> bool:

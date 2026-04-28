@@ -25,6 +25,12 @@ function formatBytes(bytes: number): string {
   return `${size.toFixed(digits)} ${units[index]}`;
 }
 
+function getVolumeOwner(volume: DockerVolume): string {
+  if (volume.used_by.length > 0) return volume.used_by.join(', ');
+  if (volume.app_hint) return volume.app_hint;
+  return /^[a-f0-9]{32,64}$/.test(volume.name) ? 'Anonymous (not attached)' : '-';
+}
+
 export default function DockerResources() {
   const [volumes, setVolumes] = useState<DockerVolume[]>([]);
   const [disks, setDisks] = useState<DockerDisk[]>([]);
@@ -140,6 +146,7 @@ export default function DockerResources() {
               <thead>
                 <tr>
                   <th>Name</th>
+                  <th>Used by App</th>
                   <th>Driver</th>
                   <th>References</th>
                   <th>Size</th>
@@ -156,6 +163,14 @@ export default function DockerResources() {
                         title={volume.name}
                       >
                         {volume.name}
+                      </span>
+                    </td>
+                    <td>
+                      <span
+                        className="docker-resource-table__truncate docker-resource-table__truncate--owner"
+                        title={getVolumeOwner(volume)}
+                      >
+                        {getVolumeOwner(volume)}
                       </span>
                     </td>
                     <td>{volume.driver}</td>
