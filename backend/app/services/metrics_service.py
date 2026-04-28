@@ -107,7 +107,7 @@ class MetricsService:
         print(snapshot.cpu_percent)
     """
 
-    async def get_snapshot(self) -> MetricsSnapshot:
+    async def get_snapshot(self, include_containers: bool = True) -> MetricsSnapshot:
         """Return a complete metrics snapshot for the current moment.
 
         Collects host metrics via psutil and per-container stats via Docker.
@@ -121,9 +121,9 @@ class MetricsService:
         """
         import asyncio
 
-        return await asyncio.to_thread(self._get_snapshot_sync)
+        return await asyncio.to_thread(self._get_snapshot_sync, include_containers)
 
-    def _get_snapshot_sync(self) -> MetricsSnapshot:
+    def _get_snapshot_sync(self, include_containers: bool = True) -> MetricsSnapshot:
         """Synchronous implementation of metrics collection.
         """
         # ── Host metrics (psutil) ─────────────────────────────────────────────
@@ -143,32 +143,37 @@ class MetricsService:
         net_sent = net.bytes_sent
         net_recv = net.bytes_recv
 
-        # ── Per-container stats (Docker SDK) ─────────────────────────────────
         containers: list[ContainerStat] = []
-        try:
-            client = docker.from_env()
-            for container in client.containers.list():
-                try:
-                    stats = container.stats(stream=False)
-                    cpu_pct = _calc_container_cpu(stats)
-                    mem_stats = stats.get("memory_stats", {})
-                    mem_usage = mem_stats.get("usage", 0)
-                    mem_limit = mem_stats.get("limit", 0)
-                    containers.append(
-                        ContainerStat(
-                            id=container.short_id,
-                            name=container.name.lstrip("/"),
-                            status=container.status,
-                            cpu_percent=cpu_pct,
-                            mem_usage_mb=round(mem_usage / (1024 * 1024), 2),
-                            mem_limit_mb=round(mem_limit / (1024 * 1024), 2),
+        if include_containers:
+            # ── Per-container stats (Docker SDK) ─────────────────────────────
+            try:
+                client = docker.from_env()
+                for container in client.containers.list():
+                    try:
+                        stats = container.stats(stream=False)
+                        cpu_pct = _calc_container_cpu(stats)
+                        mem_stats = stats.get("memory_stats", {})
+                        mem_usage = mem_stats.get("usage", 0)
+                        mem_limit = mem_stats.get("limit", 0)
+                        containers.append(
+                            ContainerStat(
+                                id=container.short_id,
+                                name=container.name.lstrip("/"),
+                                status=container.status,
+                                cpu_percent=cpu_pct,
+                                mem_usage_mb=round(mem_usage / (1024 * 1024), 2),
+                                mem_limit_mb=round(mem_limit / (1024 * 1024), 2),
+                            )
                         )
-                    )
-                except Exception as e:
-                    logger.debug("Error fetching stats for container %s: %s", container.short_id, e)
-            client.close()
-        except Exception as e:
-            logger.warning("Docker unavailable — skipping container stats: %s", e)
+                    except Exception as e:
+                        logger.debug(
+                            "Error fetching stats for container %s: %s",
+                            container.short_id,
+                            e,
+                        )
+                client.close()
+            except Exception as e:
+                logger.warning("Docker unavailable — skipping container stats: %s", e)
 
         return MetricsSnapshot(
             cpu_percent=cpu,

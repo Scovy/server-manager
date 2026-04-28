@@ -141,6 +141,11 @@ async def ws_metrics(websocket: WebSocket, db: AsyncSession = Depends(get_db)) -
     alert_cooldown: dict[str, datetime] = {}  # metric → last alert time
 
     try:
+        # Send host-level metrics immediately so dashboard cards render on refresh
+        # without waiting for Docker container stats collection.
+        initial_snapshot = await metrics_service.get_snapshot(include_containers=False)
+        await websocket.send_text(initial_snapshot.model_dump_json())
+
         while True:
             snapshot = await metrics_service.get_snapshot()
 
