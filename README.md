@@ -35,8 +35,8 @@ Web-based management panel for homelab servers. Provides system monitoring, Dock
 
 ```bash
 # Clone the repository
-git clone https://github.com/user/homelab-dashboard.git
-cd homelab-dashboard
+git clone https://github.com/scovy/server-manager.git
+cd server-manager
 
 # Setup Caddy/SSL environment
 cp .env.example .env
@@ -89,6 +89,10 @@ Notes:
 ## Project Status
 - [x] Phase 1: Project Scaffolding
 - [x] Phase 2: Monitoring & Dashboard
-- [ ] Phase 3: Container Management
-- [ ] Phase 4: Marketplace & SSL
-- [ ] Phase 5: Security & Backup
+- [x] Phase 3: Container Management
+- [x] Phase 4: Marketplace & SSL
+- [x] Phase 5: Security & Backup
+
+## License
+
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
