@@ -111,7 +111,7 @@ export default function Dashboard() {
       <div className="dashboard__cards">
         <MetricCard
           icon="🖥️"
-          label="CPU Usage"
+          label="CPU Usage 1"
           value={current?.cpu_percent ?? null}
           warnThreshold={80}
           dangerThreshold={95}

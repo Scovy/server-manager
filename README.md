@@ -1,98 +1,123 @@
-# Homelab Dashboard
+# Server Manager (Homelab Dashboard)
 
-Web-based management panel for homelab servers. Provides system monitoring, Docker container management, app marketplace, and automated SSL with reverse proxy.
+Panel graficzny do zarządzania domowym serwerem (homelab). Umożliwia monitorowanie parametrów systemu w czasie rzeczywistym, zarządzenie cyklem życia kontenerów Docker, instalowanie aplikacji z wbudowanego sklepu (Marketplace) oraz automatyczną konfigurację tras reverse proxy z obsługą SSL (Caddy).
 
-## Tech Stack
-- **Backend:** FastAPI, SQLite (async), Docker SDK for Python, PyJWT
-- **Frontend:** React, TypeScript, Vite, TanStack Query
-- **Infrastructure:** Caddy (Reverse Proxy + Auto SSL), Docker Compose
+## Stos Technologiczny
 
-## Quickstart (Development)
+* **Backend:** FastAPI (Python 3.10+), SQLite (asynchroniczny asyncalchemy / aiosqlite), Docker SDK for Python, PyJWT
+* **Frontend:** React 19, TypeScript, Vite, TanStack Query, CodeMirror (edytor YAML/env), xterm.js (konsola kontenera)
+* **Infrastruktura:** Caddy (Reverse Proxy + Auto SSL), Docker Compose, Terraform (wdrożenie Azure)
 
-1. **Backend**
+---
+
+## 1. Uruchomienie lokalne (Development)
+
+### Backend
+1. Przejdź do katalogu backendu i utwórz plik `.env`:
    ```bash
    cd backend
    cp .env.example .env
+   ```
+2. Skonfiguruj środowisko wirtualne Pythona, zainstaluj zależności i wykonaj migracje bazy danych:
+   ```bash
    python -m venv venv
    source venv/bin/activate
    pip install -r requirements.txt -r requirements-dev.txt
    
-   # Run migrations
+   # Uruchomienie migracji bazy SQLite (homelab.db)
    alembic upgrade head
-   
-   # Start dev server
+   ```
+3. Uruchom serwer deweloperski FastAPI:
+   ```bash
    uvicorn app.main:app --reload
    ```
+   Serwer API będzie dostępny pod adresem: `http://localhost:8000`
 
-2. **Frontend**
+### Frontend
+1. Przejdź do katalogu frontendu:
    ```bash
-   cd frontend
+   cd ../frontend
+   ```
+2. Zainstaluj zależności i uruchom serwer deweloperski Vite:
+   ```bash
    npm ci
    npm run dev
    ```
+   Aplikacja kliencka będzie dostępna pod adresem: `http://localhost:5173`
 
-## Production Deployment
+---
 
-```bash
-# Clone the repository
-git clone https://github.com/scovy/server-manager.git
-cd server-manager
+## 2. Wdrożenie produkcyjne (Production)
 
-# Setup Caddy/SSL environment
-cp .env.example .env
-# Edit .env and set SITE_ADDRESS + DOMAIN + ACME_EMAIL
-
-# Setup backend environment
-cp backend/.env.example backend/.env
-# Edit backend/.env and set a strong JWT_SECRET and correct DOMAIN
-
-# Start the stack
-docker compose up -d
-```
-
-## HTTPS / SSL Setup (Caddy)
-
-1. Point a public DNS record to your server IP, e.g. `home.example.com`.
-2. In project root `.env`, set:
-   - `SITE_ADDRESS=home.example.com`
-   - `DOMAIN=home.example.com`
-   - `ACME_EMAIL=you@example.com`
-3. Ensure ports 80 and 443 are open to the internet.
-4. Start or restart Caddy with Compose:
+### Opcja A: Docker Compose (Lokalnie lub VPS)
+1. W głównym katalogu projektu utwórz pliki `.env` na podstawie szablonów:
    ```bash
-   docker compose up -d caddy
+   # Konfiguracja Caddy i domen bazowych
+   cp .env.example .env
+   
+   # Konfiguracja backendu (ustaw bezpieczny JWT_SECRET)
+   cp backend/.env.example backend/.env
    ```
-5. Verify certificate issuance:
+2. Zmodyfikuj plik `.env` w głównym katalogu, wpisując swoją domenę oraz e-mail dla certyfikatów SSL:
+   ```env
+   SITE_ADDRESS=twoja-domena.pl
+   DOMAIN=twoja-domena.pl
+   ACME_EMAIL=twój-email@domena.pl
+   ```
+3. Uruchom cały stos aplikacji w tle:
    ```bash
-   docker compose logs -f caddy
+   docker compose -f docker-compose.prod.yml up -d
    ```
 
-Notes:
-- For certificate dry-runs, set `ACME_CA=https://acme-staging-v02.api.letsencrypt.org/directory`.
-- For local HTTPS, set `SITE_ADDRESS=192.168.56.10` (or `SITE_ADDRESS=localhost`) and trust Caddy's local CA on your client.
-- For local testing without TLS, set `SITE_ADDRESS=http://192.168.56.10` (or `http://localhost`).
+### Opcja B: Chmura Azure za pomocą Terraform
+W katalogu `infra/azure/` przygotowano konfigurację Terraform, która automatycznie tworzy maszynę wirtualną na Azure, instaluje niezbędne pakiety (Docker, docker-compose) i wdraża aplikację przy użyciu `cloud-init`.
 
-## Available Scripts
+1. Przejdź do katalogu wdrożenia Azure:
+   ```bash
+   cd infra/azure
+   ```
+2. Zainicjalizuj Terraform i uruchom wdrożenie:
+   ```bash
+   terraform init
+   terraform apply
+   ```
+3. Po zakończeniu wdrożenia, w konsoli wyświetli się publiczny adres IP serwera oraz gotowa komenda SSH do logowania.
+
+---
+
+## 3. Konfiguracja HTTPS / SSL (Caddy)
+
+Serwer Caddy automatycznie obsługuje żądania SSL i wystawia certyfikaty Let's Encrypt.
+1. Skieruj rekord A swojej domeny (np. `serwer.twojadomena.pl`) na publiczny IP serwera.
+2. Upewnij się, że porty **80** i **443** są otwarte i przekierowane na serwerze.
+3. W przypadku wdrożenia lokalnego bez domeny publicznej (tylko w sieci LAN), możesz uruchomić serwer w trybie HTTP bez SSL, podając w głównym pliku `.env`:
+   ```env
+   SITE_ADDRESS=http://localhost
+   ```
+
+---
+
+## 4. Dostępne skrypty i testy
 
 ### Backend (`/backend`)
-- `pytest` — Run unit and integration tests
-- `ruff check .` — Lint Python code
-- `mypy app/` — Static type checking
-- `alembic revision --autogenerate -m "msg"` — Create a new database migration
+* `./venv/bin/pytest` — Uruchomienie testów jednostkowych (weryfikacja logowania, 2FA, kontenerów Docker)
+* `ruff check .` — Analiza statyczna i linting kodu Pythona
+* `mypy app/` — Weryfikacja typowania statycznego Pythona
 
 ### Frontend (`/frontend`)
-- `npm run dev` — Start Vite dev server on port 5173
-- `npm run test` — Run Vitest tests
-- `npm run lint` — Lint TS/React code
-- `npm run build` — Create production build
+* `npm run test` — Uruchomienie testów Vitest dla komponentów React
+* `npm run lint` — Analiza statyczna i linting kodu TypeScript/ESLint
+* `npm run build` — Budowanie wersji produkcyjnej frontendu do katalogu `dist`
 
-## Project Status
-- [x] Phase 1: Project Scaffolding
-- [x] Phase 2: Monitoring & Dashboard
-- [x] Phase 3: Container Management
-- [x] Phase 4: Marketplace & SSL
-- [x] Phase 5: Security & Backup
+---
 
-## License
+## 5. CI/CD i aktualizacje
 
-This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+* **GitHub Actions:** Przy każdym wypchnięciu zmian (push) do gałęzi `main` uruchamiany jest automatyczny potok CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)), który testuje aplikację, buduje nowe obrazy Docker i publikuje je w rejestrze `ghcr.io`.
+* **Watchtower:** Produkcyjne wdrożenie posiada wbudowaną usługę Watchtower, która automatycznie monitoruje rejestr obrazów i bezprzerwowo aktualizuje kontenery na serwerze w momencie publikacji nowej wersji.
+
+---
+
+## Licencja
+
+Projekt jest udostępniany na licencji MIT. Szczegółowe informacje znajdują się w pliku [LICENSE](LICENSE).
