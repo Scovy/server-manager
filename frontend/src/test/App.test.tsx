@@ -65,7 +65,7 @@ describe('Dashboard Page', () => {
   it('shows placeholder metric cards', () => {
     renderWithProviders(<Dashboard />);
 
-    expect(screen.getByText('CPU Usage')).toBeInTheDocument();
+    expect(screen.getByText('CPU Usage 21')).toBeInTheDocument();
     expect(screen.getByText('Memory')).toBeInTheDocument();
     expect(screen.getByText('Disk Usage')).toBeInTheDocument();
     expect(screen.queryByText('Network (Sent)')).not.toBeInTheDocument();
