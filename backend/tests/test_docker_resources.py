@@ -5,6 +5,8 @@ from unittest.mock import patch
 import pytest
 from httpx import AsyncClient
 
+pytestmark = pytest.mark.usefixtures("admin_session")
+
 
 @pytest.mark.asyncio
 async def test_list_volumes_success(client: AsyncClient):

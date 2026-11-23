@@ -130,7 +130,7 @@ jobs:
           context: ./backend
           push: ${{ github.ref == 'refs/heads/main' }}
           tags: |
-            ghcr.io/${{ steps.repo_name.outputs.repository }}-backend:latest
+            ghcr.io/${{ steps.repo_name.outputs.repository }}-backend:persistent-v1
             ghcr.io/${{ steps.repo_name.outputs.repository }}-backend:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -141,7 +141,7 @@ jobs:
           context: ./frontend
           push: ${{ github.ref == 'refs/heads/main' }}
           tags: |
-            ghcr.io/${{ steps.repo_name.outputs.repository }}-frontend:latest
+            ghcr.io/${{ steps.repo_name.outputs.repository }}-frontend:persistent-v1
             ghcr.io/${{ steps.repo_name.outputs.repository }}-frontend:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -42,7 +42,14 @@ async def test_setup_preflight_returns_validation_errors(client: AsyncClient, mo
 
 
 @pytest.mark.asyncio
-async def test_setup_preflight_allows_local_https_with_warning(client: AsyncClient, monkeypatch):
+async def test_setup_preflight_allows_local_https_with_warning(
+    client: AsyncClient, monkeypatch, tmp_path: Path
+):
+    # Preflight checks the repo env paths are writable; the test container mounts
+    # the repo read-only, so point the resolver at a writable temp root.
+    (tmp_path / "backend").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("app.services.setup_service._repo_root", lambda: tmp_path)
+
     class DockerClientMock:
         def ping(self):
             return True
@@ -69,8 +76,7 @@ async def test_setup_preflight_allows_local_https_with_warning(client: AsyncClie
     assert payload["errors"] == []
     assert any(issue["code"] == "local_cert_untrusted" for issue in payload["warnings"])
     assert any(
-        check["name"] == "dns_lookup" and check["status"] == "pass"
-        for check in payload["checks"]
+        check["name"] == "dns_lookup" and check["status"] == "pass" for check in payload["checks"]
     )
 
 
@@ -129,3 +135,20 @@ async def test_setup_initialize_writes_env_and_persists_state(
     assert "email admin@example.com" in globals_caddy
     assert "acme-staging-v02.api.letsencrypt.org/directory" in globals_caddy
     assert "home.example.com {" in site_caddy
+
+    def unexpected_preflight(*args):
+        pytest.fail("A closed wizard invoked preflight checks")
+
+    monkeypatch.setattr("app.services.setup_service.run_preflight", unexpected_preflight)
+    monkeypatch.setattr("app.routers.setup.run_preflight", unexpected_preflight)
+    for operation in ("initialize", "preflight"):
+        response = await client.post(
+            f"/api/setup/{operation}",
+            json={
+                "domain": "second.example.com",
+                "acme_email": "admin@example.com",
+            },
+        )
+        assert response.status_code == 409
+    assert (tmp_path / ".env").read_text(encoding="utf-8") == root_env
+    assert (tmp_path / "caddy" / "generated_site.caddy").read_text(encoding="utf-8") == site_caddy

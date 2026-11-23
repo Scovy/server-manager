@@ -7,6 +7,7 @@
  *  - red (danger)    : value >= danger threshold
  */
 
+import type { ReactNode } from 'react';
 import './MetricCard.css';
 
 interface MetricCardProps {
@@ -14,12 +15,16 @@ interface MetricCardProps {
   icon: string;
   /** Card label, e.g. "CPU Usage". */
   label: string;
-  /** Primary numeric value to display (percentage or other). */
+  /** Primary numeric value to display (percentage or other); null while unavailable. */
   value: number | null;
   /** Unit string appended to the value, e.g. "%" or " GB". */
   unit?: string;
   /** Optional secondary line, e.g. "7.6 / 16 GB". */
   subtitle?: string;
+  /** Optional percentage (0–100) rendered as a native <meter> bar. */
+  meterPercent?: number | null;
+  /** Optional extra line under the subtitle (e.g. status chips). */
+  below?: ReactNode;
   /** Percentage at which the card turns yellow (default 70). */
   warnThreshold?: number;
   /** Percentage at which the card turns red (default 90). */
@@ -39,29 +44,44 @@ export default function MetricCard({
   value,
   unit = '%',
   subtitle,
+  meterPercent = null,
+  below,
   warnThreshold = 70,
   dangerThreshold = 90,
 }: MetricCardProps) {
   const statusClass = getStatusClass(value, warnThreshold, dangerThreshold);
 
   return (
-    <div className={`card metric-card ${statusClass}`} role="region" aria-label={label}>
+    <article className={`card metric-card ${statusClass}`} role="region" aria-label={label}>
       <div className="metric-card__icon" aria-hidden="true">{icon}</div>
       <div className="metric-card__body">
         <span className="metric-card__label">{label}</span>
         <span className="metric-card__value">
           {value !== null ? (
             <>
-              {typeof value === 'number' ? value.toFixed(1) : value}
-              <span className="metric-card__unit">{unit}</span>
+              {Number.isInteger(value) ? String(value) : value.toFixed(1)}
+              {unit && <span className="metric-card__unit">{unit}</span>}
             </>
           ) : (
             <span className="metric-card__loading">—</span>
           )}
         </span>
         {subtitle && <span className="metric-card__subtitle">{subtitle}</span>}
+        {meterPercent !== null && (
+          <meter
+            className="metric-card__meter"
+            min={0}
+            max={100}
+            low={warnThreshold}
+            high={dangerThreshold}
+            optimum={0}
+            value={meterPercent}
+            aria-label={`${label}: ${meterPercent} percent used`}
+          />
+        )}
+        {below && <div className="metric-card__below">{below}</div>}
       </div>
       <div className="metric-card__indicator" aria-hidden="true" />
-    </div>
+    </article>
   );
 }

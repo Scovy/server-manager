@@ -1,86 +1,190 @@
 /**
  * Dashboard page — The main overview with live system metrics.
  *
- * Uses the `useMetricsWS` hook to connect to the backend and displays:
- * - 3 MetricCard components for current KPI values
- * - 4 charts for the rolling history buffer
+ * Uses the `useMetricsWS` hook for the live stream and the metrics
+ * history REST endpoint for cold load and reconnect catch-up. Both merge
+ * chronologically into the exact rolling hour [now − 1 h, now] ("Last
+ * hour") which the charts render on a real numeric time axis.
+ *
+ * - MetricCards for current KPI values (CPU, RAM, disk incl. native
+ *   meter, containers incl. unhealthy/restarting chips)
+ * - CPU/RAM (%) and network (TX/RX throughput) history charts, each a
+ *   per-minute peak series
  * - ContainerStatsTable for running Docker container metrics
  * - AlertConfigPanel to configure threshold webhooks
+ * - FreshnessBadge tracking the age of the newest real sample
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { useMetricsWS } from '../hooks/useMetricsWS';
-import type { ChartPoint } from '../hooks/useMetricsWS';
+import {
+  bucketValueByMinute,
+  hourWindow,
+  inWindow,
+  LIVE_MAX_DT_MS,
+  latestRate,
+  mergeNetworkBuckets,
+  mergeSeries,
+  parseMetricsTimestamp,
+  REST_MAX_DT_MS,
+  STALE_AFTER_MS,
+  toNetworkRates,
+} from '../metrics/metricsSeries';
+import type { ChartPoint } from '../metrics/metricsSeries';
 import { fetchMetricsHistory } from '../api/metricsApi';
-import type { HistoryPoint } from '../types/metrics';
+import type { HistoryPoint, MetricsSnapshot, WSStatus } from '../types/metrics';
 
 import MetricCard from '../components/MetricCard';
 import MetricChart from '../components/MetricChart';
 import NetworkChart from '../components/NetworkChart';
 import ContainerStatsTable from '../components/ContainerStatsTable';
 import AlertConfigPanel from '../components/AlertConfigPanel';
+import FreshnessBadge from '../components/FreshnessBadge';
+import { useNow } from '../hooks/useNow';
 import './Dashboard.css';
 
-const MEGABYTE = 1024 * 1024;
+/** 60 s storage cadence — 90 rows comfortably cover the hour window. */
+const HISTORY_LIMIT = 90;
 
-function mapHistoryPoint(pt: HistoryPoint): ChartPoint {
-  const ts = new Date(pt.timestamp).getTime();
+function mapHistoryPoint(pt: HistoryPoint): ChartPoint | null {
+  const ts = parseMetricsTimestamp(pt.timestamp);
+  if (ts === null) return null;
   return {
     ts,
-    time: new Date(ts).toLocaleTimeString(),
     cpu: pt.cpu_percent,
     ram: pt.ram_percent,
-    ram_used_gb: pt.ram_used_mb / 1024,
-    disk: pt.disk_percent,
     net_sent: pt.net_bytes_sent,
     net_recv: pt.net_bytes_recv,
   };
 }
 
-function toNetworkThroughput(points: ChartPoint[]): Array<{
-  time: string;
-  sent_rate_mb_s: number;
-  recv_rate_mb_s: number;
-}> {
-  return points.map((point, index) => {
-    if (index === 0) {
-      return { time: point.time, sent_rate_mb_s: 0, recv_rate_mb_s: 0 };
-    }
+/** Disk card subtitle. Free space comes from the filesystem's own
+ * counter — never computed as total-used (that overstates it by the
+ * filesystem reserve). Older backends without the field get used/total. */
+function diskSubtitle(snapshot: MetricsSnapshot | null): string {
+  const name = 'Backend filesystem (/)';
+  if (!snapshot) return name;
+  const parts = [name];
+  if (snapshot.disk_source) parts.push(snapshot.disk_source);
+  if (snapshot.disk_free_gb != null) {
+    parts.push(`${snapshot.disk_free_gb.toFixed(0)} GB free`);
+  } else {
+    parts.push(`${snapshot.disk_used_gb.toFixed(0)} / ${snapshot.disk_total_gb.toFixed(0)} GB`);
+  }
+  return parts.join(' · ');
+}
 
-    const prev = points[index - 1];
-    const dtSeconds = Math.max((point.ts - prev.ts) / 1000, 1);
-    const sentDelta = Math.max(0, point.net_sent - prev.net_sent);
-    const recvDelta = Math.max(0, point.net_recv - prev.net_recv);
+/** Containers KPI card. `containers` from older backends may list paused
+ * or restarting containers too, so a missing summary is never claimed as
+ * a running count unless stats actually report. */
+function ContainersCard({ snapshot }: { snapshot: MetricsSnapshot | null }) {
+  const summary = snapshot?.container_summary ?? null;
+  const reporting = snapshot && snapshot.containers.length > 0 && !summary
+    ? snapshot.containers.length
+    : null;
 
-    return {
-      time: point.time,
-      sent_rate_mb_s: sentDelta / MEGABYTE / dtSeconds,
-      recv_rate_mb_s: recvDelta / MEGABYTE / dtSeconds,
-    };
-  });
+  let value: number | null;
+  let subtitle: string;
+  if (summary) {
+    value = summary.running;
+    subtitle = `${summary.running} of ${summary.total} running`;
+  } else if (reporting !== null) {
+    value = reporting;
+    subtitle = 'reporting stats · summary unavailable';
+  } else {
+    value = null;
+    subtitle = 'summary unavailable';
+  }
+
+  const below: ReactNode = summary ? (
+    <>
+      {summary.unhealthy > 0 && (
+        <span className="chip chip--danger">{summary.unhealthy} unhealthy</span>
+      )}
+      {summary.restarting > 0 && (
+        <span className="chip chip--warning">{summary.restarting} restarting</span>
+      )}
+    </>
+  ) : null;
+
+  return (
+    <MetricCard
+      icon="🐳"
+      label="Containers"
+      value={value}
+      unit=""
+      subtitle={subtitle}
+      below={below}
+    />
+  );
 }
 
 export default function Dashboard() {
-  const { current, history: wsHistory, status } = useMetricsWS();
-  const [dbHistory, setDbHistory] = useState<HistoryPoint[]>([]);
+  const { current, currentTs, history: wsHistory, status } = useMetricsWS();
+  const [dbHistory, setDbHistory] = useState<ChartPoint[]>([]);
 
-  // Fetch initial history on mount so charts aren't empty while WS populates
-  useEffect(() => {
-    fetchMetricsHistory({ limit: 60 })
-      .then((data) => setDbHistory(data))
-      .catch((err) => console.warn('Failed to fetch initial history:', err));
+  const loadSeq = useRef(0);
+  const loadHistory = useCallback(() => {
+    const seq = ++loadSeq.current;
+    fetchMetricsHistory({ limit: HISTORY_LIMIT })
+      .then((rows) => {
+        // a newer request superseded this response — keep the newer history
+        if (loadSeq.current !== seq) return;
+        setDbHistory(rows.map(mapHistoryPoint).filter((p): p is ChartPoint => p !== null));
+      })
+      .catch((err) => console.warn('Failed to fetch metrics history:', err));
   }, []);
 
-  // Merge DB history with live WS history
-  // In a production app you'd deduplicate these based on timestamp,
-  // but for the MVP simply concatenating or using WS history if available is fine.
-  const chartData = wsHistory.length > 5 ? wsHistory : [
-    ...dbHistory.map(mapHistoryPoint),
-    ...wsHistory,
-  ].slice(-60);
-  const networkData = toNetworkThroughput(chartData);
+  useEffect(() => {
+    loadHistory();
+  }, [loadHistory]);
 
-  // Connection badge styling
+  // Catch-up only after a lost connection ('reconnecting' → 'connected');
+  // the initial connect is already covered by the cold load above.
+  const prevStatus = useRef<WSStatus | null>(null);
+  useEffect(() => {
+    const before = prevStatus.current;
+    prevStatus.current = status;
+    if (status === 'connected' && before === 'reconnecting') loadHistory();
+  }, [status, loadHistory]);
+
+  const now = useNow(1_000);
+
+  // Current traffic: only fresh live samples count — a reset, a stream
+  // gap or a stale/disconnected WS yields '—', never an old DB rate.
+  const lastLive = useMemo(() => latestRate(wsHistory, LIVE_MAX_DT_MS), [wsHistory]);
+  const liveOk = status === 'connected' && currentTs !== null && now - currentTs <= STALE_AFTER_MS;
+  const currentRx = liveOk ? lastLive?.recv_rate ?? null : null;
+  const currentTx = liveOk ? lastLive?.sent_rate ?? null : null;
+
+  // Exact [now−1h, now] window; boundary rows filtered by real ts.
+  const window1h = useMemo(() => hourWindow(now), [now]);
+  const restWindow = useMemo(() => inWindow(dbHistory, window1h), [dbHistory, window1h]);
+  const liveWindow = useMemo(() => inWindow(wsHistory, window1h), [wsHistory, window1h]);
+  const mergedWindow = useMemo(() => mergeSeries(restWindow, liveWindow), [restWindow, liveWindow]);
+
+  const cpuSeries = useMemo(
+    () => bucketValueByMinute(mergedWindow.map((p) => ({ ts: p.ts, value: p.cpu })), window1h.bucketStarts),
+    [mergedWindow, window1h],
+  );
+  const ramSeries = useMemo(
+    () => bucketValueByMinute(mergedWindow.map((p) => ({ ts: p.ts, value: p.ram })), window1h.bucketStarts),
+    [mergedWindow, window1h],
+  );
+
+  // Rates per source only — never across a REST/WS boundary. Live wins
+  // where it has continuous coverage; REST backfills the rest.
+  const liveRates = useMemo(() => toNetworkRates(liveWindow, LIVE_MAX_DT_MS), [liveWindow]);
+  const restRates = useMemo(() => toNetworkRates(restWindow, REST_MAX_DT_MS), [restWindow]);
+  const networkSeries = useMemo(
+    () => mergeNetworkBuckets(liveRates, restRates, window1h.bucketStarts),
+    [liveRates, restRates, window1h],
+  );
+
+  const xDomain: [number, number] = [window1h.start, window1h.end];
+  const ticks = window1h.ticks;
+
   let badgeClass = 'badge-warning';
   let badgeText = 'Connecting...';
   if (status === 'connected') {
@@ -97,9 +201,10 @@ export default function Dashboard() {
       <div className="dashboard__header">
         <div>
           <h1 className="dashboard__title">System Overview</h1>
-          <p className="dashboard__subtitle">Live metrics and container status</p>
+          <p className="dashboard__subtitle">Live metrics and container status · Last hour</p>
         </div>
         <div className="dashboard__status">
+          <FreshnessBadge sampleTs={currentTs} />
           <span className={`badge ${badgeClass} status-indicator`}>
             <span className="status-indicator__dot" />
             {badgeText}
@@ -111,7 +216,7 @@ export default function Dashboard() {
       <div className="dashboard__cards">
         <MetricCard
           icon="🖥️"
-          label="CPU Usage 21"
+          label="CPU Usage"
           value={current?.cpu_percent ?? null}
           warnThreshold={80}
           dangerThreshold={95}
@@ -121,49 +226,51 @@ export default function Dashboard() {
           label="Memory"
           value={current?.ram_percent ?? null}
           subtitle={
-            current ? `${current.ram_used_mb} / ${current.ram_total_mb} MB` : undefined
+            current
+              ? `${(current.ram_used_mb / 1024).toFixed(1)} / ${(current.ram_total_mb / 1024).toFixed(1)} GB`
+              : undefined
           }
           warnThreshold={85}
           dangerThreshold={95}
         />
         <MetricCard
-          icon="💿"
+          icon="💾"
           label="Disk Usage"
           value={current?.disk_percent ?? null}
-          subtitle={
-            current ? `${current.disk_used_gb.toFixed(0)} / ${current.disk_total_gb.toFixed(0)} GB` : undefined
-          }
+          subtitle={diskSubtitle(current)}
+          meterPercent={current?.disk_percent ?? null}
           warnThreshold={85}
           dangerThreshold={95}
         />
+        <ContainersCard snapshot={current} />
       </div>
 
       {/* ── Metric Charts ─────────────────────────────────────────────────── */}
       <div className="dashboard__charts">
         <MetricChart
           title="CPU Usage History"
-          data={chartData}
-          dataKey="cpu"
+          data={cpuSeries}
           color="var(--color-info)"
           unit="%"
-          yMax={100}
+          xDomain={xDomain}
+          ticks={ticks}
         />
         <MetricChart
           title="Memory History"
-          data={chartData}
-          dataKey="ram_used_gb"
+          data={ramSeries}
           color="var(--color-accent)"
-          unit=" GB"
-        />
-        <MetricChart
-          title="Disk Space History"
-          data={chartData}
-          dataKey="disk"
-          color="var(--color-warning)"
           unit="%"
-          yMax={100}
+          xDomain={xDomain}
+          ticks={ticks}
         />
-        <NetworkChart title="Network Throughput" data={networkData} />
+        <NetworkChart
+          title="Network Throughput"
+          data={networkSeries}
+          currentRx={currentRx}
+          currentTx={currentTx}
+          xDomain={xDomain}
+          ticks={ticks}
+        />
       </div>
 
       {/* ── Container Stats & Settings ────────────────────────────────────── */}

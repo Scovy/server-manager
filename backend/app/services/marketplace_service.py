@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import shutil
 import socket
+import sqlite3
 import subprocess
 import tarfile
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 from io import BytesIO
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import TypedDict
+from uuid import uuid4
 
 import docker
 from docker.errors import APIError, DockerException, NotFound
@@ -412,9 +419,7 @@ def list_templates(
     if category:
         lowered_category = category.strip().lower()
         result = [
-            template
-            for template in result
-            if template["category"].lower() == lowered_category
+            template for template in result if template["category"].lower() == lowered_category
         ]
 
     if search:
@@ -458,31 +463,46 @@ def is_port_available(port: int) -> bool:
     return True
 
 
+# Service-level env_file entry the generated compose files use. `format: raw`
+# loads .env with the `docker run --env-file` parser: values pass verbatim.
+# The default parser interpolates $VAR (leaking host settings), strips
+# surrounding quotes and cuts " #" comments — verified on Compose v2.36.2.
+# Requires Compose v2.29+; the bundled docker:28-cli image ships v2.36.2.
+ENV_FILE_REFERENCE = "    env_file:\n      - path: .env\n        format: raw"
+
+
 def _render_compose(
     template: MarketplaceTemplate,
     app_name: str,
     host_port: int,
     env: dict[str, str],
     volumes: list[MarketplaceVolumeSpec],
+    installation: str,
 ) -> str:
     lines = [
+        f"name: homelab-{installation}",
         "services:",
         f"  {app_name}:",
         f"    image: {template['image']}",
         f"    container_name: {app_name}",
         "    restart: unless-stopped",
+        "    labels:",
+        '      com.homelab.managed: "true"',
+        f'      com.homelab.compose-project: "{app_name}"',
+        f'      com.homelab.template: "{template["id"]}"',
+        f'      com.homelab.installation: "{installation}"',
         "    ports:",
-        f"      - \"{host_port}:{template['container_port']}\"",
+        f'      - "{host_port}:{template["container_port"]}"',
     ]
     if env:
-        lines.append("    environment:")
-        for key, value in sorted(env.items()):
-            lines.append(f"      {key}: \"{value}\"")
+        # Values live in .env, not inline: Compose gives `environment` precedence
+        # over `env_file`, and inline values also undergo $-interpolation.
+        lines.append(ENV_FILE_REFERENCE)
 
     if volumes:
         lines.append("    volumes:")
         for item in volumes:
-            lines.append(f"      - \"{item['name']}:{item['mount_path']}\"")
+            lines.append(f'      - "{item["name"]}:{item["mount_path"]}"')
 
         lines.append("")
         lines.append("volumes:")
@@ -522,9 +542,7 @@ def _validate_volume_specs(volumes: list[MarketplaceVolumeSpec]) -> None:
 def _validate_deploy_request(request: MarketplaceDeployRequest) -> None:
     app_name = request["app_name"].strip()
     if not APP_NAME_PATTERN.fullmatch(app_name):
-        raise ValueError(
-            "App name must be 3-41 chars and contain only letters, numbers, _ or -"
-        )
+        raise ValueError("App name must be 3-41 chars and contain only letters, numbers, _ or -")
 
     if request["host_port"] < 1 or request["host_port"] > 65535:
         raise ValueError("Host port must be between 1 and 65535")
@@ -534,6 +552,33 @@ def _validate_deploy_request(request: MarketplaceDeployRequest) -> None:
             raise ValueError(f"Invalid env key: {key}")
 
     _validate_volume_specs(request["volumes"])
+
+
+@contextmanager
+def deployment_lock(name: str) -> Iterator[None]:
+    if not APP_NAME_PATTERN.fullmatch(name):
+        raise ValueError("Invalid application name")
+    locks = Path(settings.MARKETPLACE_APPS_DIR).resolve() / ".locks"
+    locks.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(locks / f"{name}.sqlite", timeout=0)) as lock:
+        try:
+            lock.execute("BEGIN EXCLUSIVE")
+        except sqlite3.OperationalError as exc:
+            raise ValueError("Deployment already in progress") from exc
+        yield
+
+
+def _read_pending(directory: Path) -> dict[str, str | int]:
+    marker = directory / ".deployment-pending"
+    if directory.is_symlink() or not marker.is_file() or marker.is_symlink():
+        return {}
+    try:
+        value = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(value, dict) or not re.fullmatch("[0-9a-f]{32}", str(value.get("id"))):
+        return {}
+    return dict(value)
 
 
 def preflight_deploy(
@@ -556,13 +601,17 @@ def preflight_deploy(
         errors.append("Application with this name already exists")
 
     app_dir = Path(settings.MARKETPLACE_APPS_DIR).expanduser().resolve() / app_name
-    if app_name and app_dir.exists():
+    pending = _read_pending(app_dir) if APP_NAME_PATTERN.fullmatch(app_name) else {}
+    retry = pending.get("template") == request["template_id"] and (
+        pending.get("port") == request["host_port"]
+    )
+    if app_name and app_dir.exists() and not retry:
         errors.append("App directory already exists on disk")
 
     host_port = request["host_port"]
     if host_port < 1 or host_port > 65535:
         errors.append("Host port must be between 1 and 65535")
-    elif not is_port_available(host_port):
+    elif not retry and not is_port_available(host_port):
         errors.append(f"Host port {host_port} is already in use")
 
     try:
@@ -601,19 +650,41 @@ def deploy_template(request: MarketplaceDeployRequest) -> MarketplaceDeployResul
     compose_path = app_dir / "docker-compose.yml"
     env_path = app_dir / ".env"
 
+    fingerprint = hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
     if app_dir.exists():
-        raise ValueError("Application with this name already exists")
-
-    if not is_port_available(host_port):
-        raise ValueError(f"Host port {host_port} is already in use")
-
-    app_dir.mkdir(parents=True, exist_ok=False)
-    compose_content = _render_compose(template, app_name, host_port, env, volumes)
-    compose_path.write_text(compose_content, encoding="utf-8")
-    env_path.write_text(
-        "\n".join(f"{k}={v}" for k, v in sorted(env.items())) + ("\n" if env else ""),
-        encoding="utf-8",
-    )
+        pending = _read_pending(app_dir)
+        if not pending:
+            raise ValueError("Application with this name already exists")
+        if pending.get("request") != fingerprint:
+            raise ValueError("Retry the pending installation with its original settings")
+        installation = str(pending["id"])
+    else:
+        if not is_port_available(host_port):
+            raise ValueError(f"Host port {host_port} is already in use")
+        installation = uuid4().hex
+        apps_dir.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(dir=apps_dir, prefix=".deploy-") as staging:
+            staged = Path(staging) / app_name
+            staged.mkdir()
+            (staged / compose_path.name).write_text(
+                _render_compose(template, app_name, host_port, env, volumes, installation),
+                encoding="utf-8",
+            )
+            (staged / env_path.name).write_text(
+                "".join(f"{k}={v}\n" for k, v in sorted(env.items())), encoding="utf-8"
+            )
+            (staged / ".deployment-pending").write_text(
+                json.dumps(
+                    {
+                        "id": installation,
+                        "request": fingerprint,
+                        "template": request["template_id"],
+                        "port": host_port,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            staged.rename(app_dir)
 
     output = ""
     try:
@@ -634,7 +705,7 @@ def deploy_template(request: MarketplaceDeployRequest) -> MarketplaceDeployResul
         # Fall back to Docker SDK over /var/run/docker.sock.
         if exc.errno != 2:
             raise ValueError(f"Failed to run docker compose: {exc}") from exc
-        output = _deploy_with_docker_sdk(template, app_name, host_port, env, volumes)
+        output = _deploy_with_docker_sdk(template, app_name, host_port, env, volumes, installation)
     except subprocess.TimeoutExpired as exc:
         raise ValueError("docker compose deploy timed out") from exc
 
@@ -751,6 +822,7 @@ def _deploy_with_docker_sdk(
     host_port: int,
     env: dict[str, str],
     volumes: list[MarketplaceVolumeSpec],
+    installation: str | None = None,
 ) -> str:
     """Deploy container directly with Docker SDK when docker CLI is unavailable."""
     try:
@@ -760,7 +832,11 @@ def _deploy_with_docker_sdk(
 
     try:
         try:
-            client.containers.get(app_name)
+            existing = client.containers.get(app_name)
+            if installation and existing.labels.get("com.homelab.installation") == installation:
+                if existing.status != "running":
+                    existing.start()
+                return f"Container started: {existing.short_id}"
             raise ValueError("Application with this name already exists")
         except NotFound:
             pass
@@ -770,6 +846,8 @@ def _deploy_with_docker_sdk(
             "com.homelab.template": template["id"],
             "com.homelab.compose-project": app_name,
         }
+        if installation:
+            labels["com.homelab.installation"] = installation
 
         volume_mounts: dict[str, dict[str, str]] = {}
         for item in volumes:

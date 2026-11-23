@@ -34,6 +34,12 @@
   color: var(--color-text-secondary);
 }
 
+.containers-page__refreshing {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
 .containers-page__notice {
   border-radius: var(--radius-md);
   padding: var(--space-sm) var(--space-md);
@@ -52,6 +58,31 @@
   color: var(--color-success);
 }
 
+.containers-page__notice--stale {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  border-color: rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--color-warning);
+}
+
+/* Compact full-width card for the loading / error states, instead of two
+   tall empty panels flanking a failure notice. */
+.containers-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-sm);
+}
+
+.containers-empty p {
+  margin: 0;
+  color: var(--color-text-secondary);
+}
+
 .containers-grid {
   display: grid;
   grid-template-columns: minmax(260px, 360px) 1fr;
@@ -66,7 +97,15 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-md);
-  min-height: 640px;
+}
+
+.containers-list__search {
+  width: 100%;
+}
+
+.containers-list__empty {
+  margin: 0;
+  color: var(--color-text-secondary);
 }
 
 .containers-list__items {
@@ -106,6 +145,20 @@
   color: var(--color-text-muted);
   font-size: var(--text-xs);
   margin-top: var(--space-xs);
+}
+
+/* Long image names and 64-char ids must stay inside the box on narrow screens. */
+.containers-list__meta span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.containers-logs-error {
+  margin: 0 0 var(--space-sm);
+  color: var(--color-danger);
+  font-size: var(--text-xs);
 }
 
 .containers-detail {
@@ -272,5 +325,47 @@
     height: 260px;
     min-height: 260px;
     max-height: 260px;
+  }
+}
+
+/* Phones (down to 320px): stack the header, drop the env table header row,
+   and let each env row wrap its actions to a second line. */
+@media (max-width: 560px) {
+  .containers-page__header {
+    flex-direction: column;
+  }
+
+  .containers-page__controls {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: space-between;
+  }
+
+  .containers-page__notice--stale {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .containers-detail__stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .containers-terminal {
+    height: 200px;
+    min-height: 200px;
+    max-height: 200px;
+  }
+
+  .containers-env-table__head {
+    display: none;
+  }
+
+  .containers-env-table__row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .containers-env-table__actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
   }
 }

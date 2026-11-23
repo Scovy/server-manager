@@ -6,11 +6,14 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any, NoReturn
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
-from app.database import engine
+from app.database import engine, get_db
 from app.services.backup_service import BackupService
+from app.services.maintenance import MaintenanceBusy, gate
 
 router = APIRouter(prefix="/api/backup", tags=["backup"])
 
@@ -61,30 +64,31 @@ def delete_backup(filename: str) -> dict[str, str]:
 
 
 @router.post("/import")
-async def import_backup(request: Request) -> dict[str, Any]:
-    payload = await request.body()
-    if not payload:
-        raise HTTPException(status_code=400, detail="Backup payload is empty")
-
-    file_hint = request.headers.get("x-backup-filename", "").strip()
-    safe_name = Path(file_hint).name if file_hint else "uploaded-backup.tar.gz"
-    suffix = ".tar.gz" if safe_name.endswith(".tar.gz") else ".tar.gz"
-
-    service = BackupService()
+async def import_backup(request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     temp_path: Path | None = None
     try:
-        with NamedTemporaryFile(prefix="upload-backup-", suffix=suffix, delete=False) as handle:
-            handle.write(payload)
-            temp_path = Path(handle.name)
-
-        await engine.dispose()
-        result = service.restore_backup(temp_path)
-        await engine.dispose()
-        return result
+        with gate.restore():
+            await db.commit()  # release the authentication query before touching SQLite
+            with NamedTemporaryFile(prefix="upload-backup-", suffix=".tar.gz", delete=False) as f:
+                temp_path = Path(f.name)
+                async for chunk in request.stream():
+                    if chunk:
+                        await run_in_threadpool(f.write, chunk)
+                if f.tell() == 0:
+                    raise HTTPException(status_code=400, detail="Backup payload is empty")
+            await engine.dispose()
+            try:
+                return await run_in_threadpool(BackupService().restore_backup, temp_path)
+            finally:
+                await engine.dispose()
+    except MaintenanceBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except HTTPException:
+        raise
     except ValueError as exc:
         _handle_service_error(exc)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to restore backup: {exc}") from exc
     finally:
-        if temp_path and temp_path.exists():
+        if temp_path:
             temp_path.unlink(missing_ok=True)

@@ -116,7 +116,7 @@ ensure_env_key .env ACME_EMAIL admin@example.com
 ensure_env_key .env ACME_CA https://acme-v02.api.letsencrypt.org/directory
 
 # 7. Ensure backend/.env exists and set bootstrap HTTP defaults.
-ensure_env_file backend/.env backend/.env.example
+python3 scripts/init-backend-env.py
 ensure_env_key backend/.env DATABASE_URL sqlite+aiosqlite:///./data/homelab.db
 upsert_env_key backend/.env DOMAIN http://192.168.56.10
 upsert_env_key backend/.env CORS_ORIGINS http://192.168.56.10,http://localhost:5173,http://localhost:3000

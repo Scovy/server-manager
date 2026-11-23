@@ -6,20 +6,31 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.setting import Setting
 from app.models.user import User
 from app.services.auth_service import hash_password
 
 
-async def bootstrap_admin(client: AsyncClient, username: str, password: str):
+async def bootstrap_admin(client: AsyncClient, db: AsyncSession, username: str, password: str):
+    db.add(Setting(key="setup_initialized", value="true"))
+    await db.flush()
     return await client.post(
         "/api/auth/bootstrap",
         json={"username": username, "password": password},
     )
 
 
+async def test_bootstrap_requires_finished_setup(client: AsyncClient):
+    res = await client.post(
+        "/api/auth/bootstrap", json={"username": "admin", "password": "test1234"}
+    )
+    assert res.status_code == 400
+    assert "Complete initial setup" in res.json()["detail"]
+
+
 @pytest.mark.asyncio
 async def test_bootstrap_creates_first_admin_account(client: AsyncClient, async_db: AsyncSession):
-    res = await bootstrap_admin(client, "admin", "supersecret")
+    res = await bootstrap_admin(client, async_db, "admin", "supersecret")
 
     assert res.status_code == 200
     payload = res.json()
@@ -85,8 +96,8 @@ async def test_login_requires_explicit_initial_admin_creation(client: AsyncClien
 
 
 @pytest.mark.asyncio
-async def test_refresh_and_logout_flow(client: AsyncClient):
-    bootstrap_res = await bootstrap_admin(client, "admin", "secret123")
+async def test_refresh_and_logout_flow(client: AsyncClient, async_db: AsyncSession):
+    bootstrap_res = await bootstrap_admin(client, async_db, "admin", "secret123")
     assert bootstrap_res.status_code == 200
 
     bootstrap_logout_res = await client.post("/api/auth/logout")
@@ -113,7 +124,7 @@ async def test_refresh_and_logout_flow(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_me_and_two_factor_setup_verify(client: AsyncClient, async_db: AsyncSession):
-    login_res = await bootstrap_admin(client, "bob", "pass1234")
+    login_res = await bootstrap_admin(client, async_db, "bob", "pass1234")
     assert login_res.status_code == 200
     payload = login_res.json()
     access_token = payload["access_token"]

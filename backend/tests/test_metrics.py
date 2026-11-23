@@ -1,12 +1,17 @@
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi.testclient import TestClient
 from httpx import AsyncClient
 
+from app.main import app
 from app.services.metrics_service import MetricsSnapshot
 
 # Note: We use the `client` fixture from conftest.py which sets up
 # a fresh in-memory SQLite DB for each test and overrides get_db.
+
+
+pytestmark = pytest.mark.usefixtures("admin_session")
 
 
 @pytest.mark.asyncio
@@ -27,7 +32,7 @@ async def test_metrics_service_snapshot():
 
 @pytest.mark.asyncio
 @patch("app.routers.metrics.metrics_service", new_callable=AsyncMock)
-async def test_ws_metrics_connects(mock_service, client: AsyncClient):
+async def test_ws_metrics_connects(mock_service, admin_session):
     """WebSocket should connect and send a snapshot JSON message."""
     # Mock the snapshot so we know exactly what is sent
     mock_snapshot = MetricsSnapshot(
@@ -44,10 +49,11 @@ async def test_ws_metrics_connects(mock_service, client: AsyncClient):
     )
     mock_service.get_snapshot.return_value = mock_snapshot
 
-    # Use httpx's async context manager for websocket testing
-    # Note: Starlette/FastAPI TestClient supports websockets synchronously,
-    # but httpx AsyncClient doesn't have native WS support yet.
-    # We will test the history and alert APIs instead to verify the router integration.
+    with TestClient(app).websocket_connect(
+        "/ws/metrics", subprotocols=["homelab.v1", admin_session]
+    ) as ws:
+        assert ws.accepted_subprotocol == "homelab.v1"
+        assert ws.receive_json()["cpu_percent"] == 50.0
 
 
 @pytest.mark.asyncio

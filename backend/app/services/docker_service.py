@@ -10,8 +10,10 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 from collections.abc import Iterator
-from pathlib import Path
+from functools import cached_property
+from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
 import docker
@@ -19,6 +21,8 @@ import psutil
 from docker.errors import APIError, NotFound
 
 from app.config import settings
+from app.services.docker_mounts import backend_container
+from app.services.marketplace_service import ENV_FILE_REFERENCE
 
 
 class DockerService:
@@ -34,6 +38,26 @@ class DockerService:
     )
     _VOLUME_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{1,127}$")
     _ANONYMOUS_VOLUME_PATTERN = re.compile(r"^[a-f0-9]{32,64}$")
+    # Byte-exact grammar of Compose files the marketplace renderers generate,
+    # current (name + labels) and legacy (bare services block) shape alike.
+    _GENERATED_COMPOSE_PATTERN = re.compile(
+        r"(?:name: homelab-[0-9a-f]{32}\n)?"
+        r"services:\n"
+        r"  (?P<service>[a-zA-Z0-9][a-zA-Z0-9_-]{2,40}):\n"
+        r"    image: \S+\n"
+        r"    container_name: (?P=service)\n"
+        r"    restart: unless-stopped\n"
+        r"(?:    labels:\n"
+        r'      com.homelab.managed: "true"\n'
+        r'      com.homelab.compose-project: "(?P=service)"\n'
+        r'      com.homelab.template: "[^"\n]+"\n'
+        r'      com.homelab.installation: "[0-9a-f]{32}"\n)?'
+        r"    ports:\n"
+        r'      - "[0-9]{1,5}:[0-9]{1,5}"\n'
+        r'(?P<env_block>    environment:\n(?:      [^\s:]+: "[^"\n]*"\n)*)?'
+        r'(?:    volumes:\n(?:      - "[^"\n]+:[^"\n]+"\n)+\n'
+        r"volumes:\n(?:  [^\n]+\n    name: [^\n]+\n)+)?"
+    )
     _IGNORED_DISK_FSTYPES = {
         "autofs",
         "cgroup",
@@ -186,6 +210,9 @@ class DockerService:
         """
         container = self._get_container_or_raise(container_id)
         path = self._resolve_env_file(container)
+        # Before the new values land, turn an untouched generated app into an
+        # env_file consumer so this save (and later Apply) actually takes effect.
+        self._migrate_generated_compose_env(container, path)
         lines = [f"{key}={value}" for key, value in sorted(env.items())]
         text = "\n".join(lines) + "\n"
         try:
@@ -201,21 +228,186 @@ class DockerService:
             docker compose -f <compose_file> up -d --force-recreate
         """
         container = self._get_container_or_raise(container_id)
-        compose_path = self._resolve_compose_file(container)
-        working_dir = compose_path.parent
+        directory = self._project_directory(container)
+        files = self._compose_files(container)
+        labels = container.attrs["Config"]["Labels"]
+        command = ["docker", "compose"]
+        if os.getenv("HOMELAB_DATA_MOUNT"):
+            # Compose resolves relative bind paths on its client, while Docker
+            # creates those mounts on the daemon host. Use the host's path names.
+            runner, paths = self._compose_runner([directory, *files])
+            command = [*runner, "docker", "compose"]
+            directory, *files = paths
 
+        project = labels.get("com.docker.compose.project")
+        if project:
+            command.extend(["--project-name", str(project)])
+        for path in files:
+            command.extend(["-f", str(path)])
+        command.extend(["--project-directory", str(directory)])
+        legacy = labels.get("com.homelab.managed") == "true" and not project
+        if legacy:
+            # The container predates Compose; _apply_legacy_compose resolves and
+            # pins the project identity `docker compose config` reports.
+            return self._apply_legacy_compose(container, command)
+        return self._run_compose([*command, "up", "-d", "--force-recreate"])
+
+    def _compose_runner(self, paths: list[Path]) -> tuple[list[str], list[Path]]:
+        mounts = sorted(
+            self._backend.attrs["Mounts"], key=lambda item: len(item["Destination"]), reverse=True
+        )
+        bindings = {}
+        host_paths = []
+        for local in paths:
+            for mount in mounts:
+                destination = Path(mount["Destination"]).resolve()
+                if not local.resolve().is_relative_to(destination):
+                    continue
+                source = mount["Source"]
+                host_paths.append(Path(source) / local.resolve().relative_to(destination))
+                kind = mount["Type"]
+                if kind not in {"bind", "volume"}:
+                    raise ValueError("Unsupported mount type for the Compose project")
+                resource = mount["Name"] if kind == "volume" else source
+                bindings[source] = f"type={kind},src={resource},dst={source},readonly"
+                break
+            else:
+                raise ValueError("Compose project has no verified host mount")
+        sock = next((m for m in mounts if m["Destination"] == "/var/run/docker.sock"), None)
+        if not sock:
+            raise ValueError("The backend Docker socket mount is unavailable")
+        runner = [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--workdir",
+            str(host_paths[0]),
+            "--mount",
+            f"type=bind,src={sock['Source']},dst=/var/run/docker.sock",
+        ]
+        for binding in bindings.values():
+            runner.extend(["--mount", binding])
+        # Override the HTTP server entrypoint. The selected image already has the CLI.
+        runner.extend(["--entrypoint", "/usr/bin/env", self._backend.image.id])
+        return runner, host_paths
+
+    def _apply_legacy_compose(self, container: Any, command: list[str]) -> dict[str, str]:
+        """Adopt an existing SDK-installed app while keeping a recoverable old container."""
+        # Actual project identity as Compose itself resolves it (handles quoted
+        # names, trailing comments and env overrides); pinned so `up` cannot drift.
+        project, services = self._compose_identity(command)
+        command.extend(["--project-name", project])
+        name = str(container.name)
+        running = container.status == "running"
+        previous = f"{name}-before-compose-{container.short_id}"
+        container.rename(previous)
+        try:
+            if running:
+                container.stop()
+            result = self._run_compose([*command, "up", "-d"])
+        except Exception as exc:
+            # Remove only a replacement demonstrably created by this Compose run:
+            # both the project and the service identity have to match.
+            try:
+                replacement = self.client.containers.get(name)
+            except NotFound:
+                replacement = None
+            if replacement is not None:
+                labels = replacement.attrs["Config"].get("Labels") or {}
+                if (
+                    labels.get("com.docker.compose.project") == project
+                    and labels.get("com.docker.compose.service") in services
+                ):
+                    replacement.remove(force=True)
+            recovered = name
+            try:
+                container.rename(name)
+            except APIError:
+                # A foreign container keeps the name; never remove it. Keep the
+                # old container available under its backup name instead.
+                recovered = previous
+            if running:
+                container.start()
+            raise ValueError(
+                f"{exc} The original container is available as '{recovered}'."
+            ) from exc
+        container.remove()
+        return result
+
+    def _compose_identity(self, command: list[str]) -> tuple[str, set[str]]:
+        """Validate the project and return the identity this Compose run will use."""
+        rendered = self._run_compose([*command, "config", "--format", "json"])
+        try:
+            config = json.loads(rendered["output"])
+            project = str(config["name"])
+            services = {str(name) for name in config["services"]}
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("docker compose returned an unreadable project identity") from exc
+        if not project or not services:
+            raise ValueError("docker compose returned an empty project identity")
+        return project, services
+
+    def _migrate_generated_compose_env(self, container: Any, env_path: Path) -> None:
+        """At env-save time, switch an untouched generated Compose file to .env.
+
+        Compose lets `environment` win over `env_file`, so the inline block must
+        go before saved values can take effect. Origin can only be proven for a
+        pristine pair: the file byte-matches the generated grammar and its inline
+        keys AND values equal the current .env, exactly as deployment wrote
+        them. Anything else may carry hand edits that cannot be told apart from
+        .env edits, so such files are never rewritten here: a diverging
+        generated pair is refused with the manual merge recipe, and custom or
+        already-switched layouts are left alone silently. Apply never touches
+        the compose file.
+        """
+        try:
+            compose_path = self._resolve_compose_file(container)
+            text = compose_path.read_text(encoding="utf-8")
+        except (OSError, ValueError):
+            return  # No usable compose file; a plain .env write stays valid.
+        match = self._GENERATED_COMPOSE_PATTERN.fullmatch(text)
+        env_block = match.group("env_block") if match else None
+        if not env_block:
+            return
+        try:
+            existing = parse_env_payload(env_path.read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise ValueError(f"Failed to read {env_path}: {exc}") from exc
+        inline = dict(re.findall(r'(?m)^      ([^:\s]+): "(.*)"$', env_block))
+        if inline != existing:
+            diffs = sorted(
+                key for key in set(inline) | set(existing) if inline.get(key) != existing.get(key)
+            )
+            raise ValueError(
+                f"The compose file and .env of this app disagree for {diffs}, so this "
+                "editor cannot switch the app to .env without possibly dropping your "
+                "manual edits. Finish by hand: replace the `environment:` block in "
+                f"{compose_path} with 'env_file: [{{path: .env, format: raw}}]' "
+                "(or align the file with .env), then save again."
+            )
+        # Unique temp file in the same directory: never clobbers an existing
+        # name or symlink, safe under parallel operations; os.replace is atomic.
+        handle, tmp_name = tempfile.mkstemp(
+            prefix=compose_path.name + ".", suffix=".tmp", dir=compose_path.parent
+        )
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                stream.write(text.replace(env_block, ENV_FILE_REFERENCE + "\n"))
+            if os.name == "posix":
+                os.chmod(tmp, os.stat(compose_path).st_mode & 0o777)
+            os.replace(tmp, compose_path)
+        except OSError as exc:
+            tmp.unlink(missing_ok=True)
+            raise ValueError(f"Failed to write compose file: {exc}") from exc
+
+    @staticmethod
+    def _run_compose(command: list[str]) -> dict[str, str]:
         try:
             proc = subprocess.run(
-                [
-                    "docker",
-                    "compose",
-                    "-f",
-                    str(compose_path),
-                    "up",
-                    "-d",
-                    "--force-recreate",
-                ],
-                cwd=str(working_dir),
+                command,
                 capture_output=True,
                 text=True,
                 timeout=180,
@@ -581,130 +773,85 @@ class DockerService:
             }
         return payload
 
-    def _resolve_compose_file(self, container: Any) -> Path:
-        labels = container.attrs.get("Config", {}).get("Labels", {}) or {}
-        config_files = labels.get("com.docker.compose.project.config_files")
-        working_dir = labels.get("com.docker.compose.project.working_dir")
+    def _map_host_path(self, raw: str) -> Path:
+        if not os.getenv("HOMELAB_DATA_MOUNT"):
+            native = Path(raw)
+            if native.is_absolute():
+                return native
+            raise ValueError("Expected an absolute Compose project path")
 
-        if config_files:
-            for raw_path in str(config_files).split(","):
-                first = raw_path.strip()
-                if not first:
-                    continue
+        host = PurePosixPath(raw)
+        if not host.is_absolute() or ".." in host.parts:
+            raise ValueError("Invalid host project path")
+        mounts = self._backend.attrs["Mounts"]
+        # Match the most specific host directory. Never guess from a filename.
+        for mount in sorted(mounts, key=lambda item: len(item["Source"]), reverse=True):
+            source = PurePosixPath(mount["Source"])
+            destination = Path(mount["Destination"])
+            if host.is_relative_to(source) and destination.is_dir():
+                mapped = (destination / host.relative_to(source)).resolve()
+                if mapped.is_relative_to(destination.resolve()):
+                    return mapped
+        raise ValueError("The selected Compose project is not mounted in the backend")
 
-                candidate = Path(first)
-                if candidate.exists():
-                    return candidate
+    @cached_property
+    def _backend(self) -> Any:
+        return backend_container(self.client)
 
-                if working_dir and not candidate.is_absolute():
-                    from_working_dir = Path(working_dir) / candidate
-                    if from_working_dir.exists():
-                        return from_working_dir
+    def _project_directory(self, container: Any) -> Path:
+        labels = container.attrs.get("Config", {}).get("Labels") or {}
+        if labels.get("com.homelab.managed") == "true":
+            name = str(labels.get("com.homelab.compose-project") or container.name)
+            root = Path(settings.MARKETPLACE_APPS_DIR).resolve()
+            candidate = (root / name).resolve()
+            if candidate.parent == root and candidate.name == name and candidate.is_dir():
+                return candidate
+            raise ValueError("Marketplace project directory not found")
 
-                for root in self._workspace_roots():
-                    mapped = root / candidate.name
-                    if mapped.exists():
-                        return mapped
-
+        working_dir = str(labels.get("com.docker.compose.project.working_dir") or "")
         if working_dir:
-            for name in self._COMPOSE_FILENAMES:
-                candidate = Path(working_dir) / name
-                if candidate.exists():
-                    return candidate
+            directory = self._map_host_path(working_dir)
+            if directory.is_dir():
+                return directory
+        raise ValueError("Compose project directory not found")
 
-            for root in self._workspace_roots():
-                for name in self._COMPOSE_FILENAMES:
-                    candidate = root / name
-                    if candidate.exists():
-                        return candidate
+    def _compose_files(self, container: Any) -> list[Path]:
+        directory = self._project_directory(container)
+        labels = container.attrs["Config"]["Labels"]
+        configured = str(labels.get("com.docker.compose.project.config_files") or "")
+        if configured and labels.get("com.homelab.managed") != "true":
+            files = []
+            for raw in configured.split(","):
+                name = raw.strip()
+                if PurePosixPath(name).is_absolute() or Path(name).is_absolute():
+                    path = self._map_host_path(name)
+                else:
+                    path = (directory / name).resolve()
+                    if not path.is_relative_to(directory.resolve()):
+                        raise ValueError("Compose path is outside the project")
+                if not path.is_file():
+                    raise ValueError("Configured Compose file not found")
+                files.append(path)
+            return files
 
-        if self._is_homelab_managed(labels):
-            project = self._homelab_project_name(container, labels)
-            for apps_root in self._marketplace_apps_roots():
-                app_dir = apps_root / project
-                for name in self._COMPOSE_FILENAMES:
-                    candidate = app_dir / name
-                    if candidate.exists():
-                        return candidate
+        candidates = [directory / name for name in self._COMPOSE_FILENAMES]
+        matches = [path for path in candidates if path.is_file()]
+        if len(matches) != 1:
+            raise ValueError("Cannot uniquely identify the Compose file for this project")
+        return matches
 
-        raise ValueError("Compose file not found for container. Ensure it is compose-managed.")
+    def _resolve_compose_file(self, container: Any) -> Path:
+        return self._compose_files(container)[0]
 
     def _resolve_env_file(self, container: Any) -> Path:
-        labels = container.attrs.get("Config", {}).get("Labels", {}) or {}
-        working_dir = labels.get("com.docker.compose.project.working_dir")
-        if not working_dir:
-            if self._is_homelab_managed(labels):
-                project = self._homelab_project_name(container, labels)
-                for apps_root in self._marketplace_apps_roots():
-                    env_path = apps_root / project / ".env"
-                    if env_path.exists():
-                        return env_path
-            raise ValueError("Cannot resolve .env file path for this container")
+        path = self._project_directory(container) / ".env"
+        if not path.is_file():
+            raise ValueError(".env file not found for compose project")
+        return path
 
-        env_path = Path(working_dir) / ".env"
-        if env_path.exists():
-            return env_path
-
-        for root in self._workspace_roots():
-            mapped = root / ".env"
-            if mapped.exists():
-                return mapped
-
-        if self._is_homelab_managed(labels):
-            project = self._homelab_project_name(container, labels)
-            for apps_root in self._marketplace_apps_roots():
-                fallback_env = apps_root / project / ".env"
-                if fallback_env.exists():
-                    return fallback_env
-
-        raise ValueError(".env file not found for compose project")
-
-    @staticmethod
-    def _is_homelab_managed(labels: dict[str, str]) -> bool:
-        return str(labels.get("com.homelab.managed", "")).lower() == "true"
-
-    @staticmethod
-    def _homelab_project_name(container: Any, labels: dict[str, str]) -> str:
-        project = str(labels.get("com.homelab.compose-project", "")).strip()
-        if project:
-            return project
-        return str(container.name)
-
-    def _workspace_roots(self) -> list[Path]:
-        raw_roots = [
-            os.getenv("SETUP_CONFIG_ROOT", "").strip(),
-            "/workspace",
-            str(Path.cwd()),
-        ]
-        seen: set[str] = set()
-        roots: list[Path] = []
-        for raw in raw_roots:
-            if not raw:
-                continue
-            path = Path(raw).expanduser()
-            key = str(path)
-            if key in seen:
-                continue
-            seen.add(key)
-            roots.append(path)
-        return roots
-
-    def _marketplace_apps_roots(self) -> list[Path]:
-        configured = Path(settings.MARKETPLACE_APPS_DIR).expanduser()
-
-        roots: list[Path] = [configured]
-        for workspace_root in self._workspace_roots():
-            roots.append(workspace_root / "apps")
-
-        seen: set[str] = set()
-        deduped: list[Path] = []
-        for root in roots:
-            key = str(root)
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(root)
-        return deduped
+    def get_env_file(self, container_id: str) -> str:
+        path = self._resolve_env_file(self._get_container_or_raise(container_id))
+        return path.read_text(encoding="utf-8")
 
     @staticmethod
     def _calc_container_cpu(stats: dict[str, Any]) -> float:
@@ -715,8 +862,7 @@ class DockerService:
                 - stats["precpu_stats"]["cpu_usage"]["total_usage"]
             )
             system_delta = float(
-                stats["cpu_stats"]["system_cpu_usage"]
-                - stats["precpu_stats"]["system_cpu_usage"]
+                stats["cpu_stats"]["system_cpu_usage"] - stats["precpu_stats"]["system_cpu_usage"]
             )
             cpus_raw = stats["cpu_stats"].get("online_cpus") or len(
                 stats["cpu_stats"]["cpu_usage"].get("percpu_usage", [1])

@@ -13,9 +13,11 @@ from typing import Any, NoReturn
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
-from app.services.docker_service import DockerService, env_to_text, parse_env_payload
+from app.dependencies.auth import WS_PROTOCOL
+from app.services.docker_service import DockerService, parse_env_payload
 
 router = APIRouter(prefix="/api/containers", tags=["containers"])
+streams = APIRouter(prefix="/api/containers")
 
 
 def _handle_service_error(exc: ValueError) -> NoReturn:
@@ -200,10 +202,9 @@ def get_env(
 ) -> dict[str, Any]:
     service = DockerService()
     try:
-        data = service.get_env(container_id)
         if format == "text":
-            return {"content": env_to_text(data)}
-        return {"env": data}
+            return {"content": service.get_env_file(container_id)}
+        return {"env": service.get_env(container_id)}
     except ValueError as exc:
         _handle_service_error(exc)
     finally:
@@ -227,14 +228,14 @@ def update_env(container_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         service.close()
 
 
-@router.websocket("/{container_id}/exec")
+@streams.websocket("/{container_id}/exec")
 async def ws_exec_container(
     websocket: WebSocket,
     container_id: str,
     cmd: str = Query("/bin/sh"),
 ) -> None:
     """Interactive WebSocket terminal attached to a container exec session."""
-    await websocket.accept()
+    await websocket.accept(subprotocol=WS_PROTOCOL)
     service = DockerService()
 
     try:

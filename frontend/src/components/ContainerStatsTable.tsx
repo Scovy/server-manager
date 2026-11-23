@@ -14,10 +14,10 @@ interface ContainerStatsTableProps {
 export default function ContainerStatsTable({ containers }: ContainerStatsTableProps) {
   if (containers.length === 0) {
     return (
-      <div className="card container-stats-empty">
+      <article className="card container-stats-empty">
         <p>No container stats available.</p>
         <p className="container-stats-sub">Is Docker Engine running and accessible?</p>
-      </div>
+      </article>
     );
   }
 
@@ -25,7 +25,7 @@ export default function ContainerStatsTable({ containers }: ContainerStatsTableP
   const sorted = [...containers].sort((a, b) => b.cpu_percent - a.cpu_percent);
 
   return (
-    <div className="card container-stats">
+    <article className="card container-stats">
       <h3 className="container-stats__title">Docker Containers</h3>
       <div className="container-stats__table-wrap">
         <table className="container-stats__table">
@@ -59,6 +59,6 @@ export default function ContainerStatsTable({ containers }: ContainerStatsTableP
           </tbody>
         </table>
       </div>
-    </div>
+    </article>
   );
 }

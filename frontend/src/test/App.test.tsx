@@ -62,12 +62,24 @@ describe('Dashboard Page', () => {
     expect(screen.getByText('System Overview')).toBeInTheDocument();
   });
 
-  it('shows placeholder metric cards', () => {
+  it('shows KPI cards and the explicit hour window', () => {
     renderWithProviders(<Dashboard />);
 
-    expect(screen.getByText('CPU Usage 21')).toBeInTheDocument();
+    expect(screen.getByText('CPU Usage')).toBeInTheDocument();
     expect(screen.getByText('Memory')).toBeInTheDocument();
     expect(screen.getByText('Disk Usage')).toBeInTheDocument();
-    expect(screen.queryByText('Network (Sent)')).not.toBeInTheDocument();
+    expect(screen.getByText('Containers')).toBeInTheDocument();
+    expect(screen.getByText(/Backend filesystem/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Last hour/).length).toBeGreaterThan(0);
+    expect(screen.getByText('No data yet')).toBeInTheDocument();
+  });
+
+  it('shows CPU, RAM and network charts but no disk history', () => {
+    renderWithProviders(<Dashboard />);
+
+    expect(screen.getByText('CPU Usage History')).toBeInTheDocument();
+    expect(screen.getByText('Memory History')).toBeInTheDocument();
+    expect(screen.getByText('Network Throughput')).toBeInTheDocument();
+    expect(screen.queryByText('Disk Space History')).not.toBeInTheDocument();
   });
 });

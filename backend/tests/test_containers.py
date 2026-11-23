@@ -8,6 +8,8 @@ from httpx import AsyncClient
 
 from app.main import app
 
+pytestmark = pytest.mark.usefixtures("admin_session")
+
 
 @pytest.mark.asyncio
 async def test_list_containers_success(client: AsyncClient):
@@ -59,7 +61,7 @@ async def test_start_container_success(client: AsyncClient):
 async def test_get_env_text_format(client: AsyncClient):
     with patch("app.routers.containers.DockerService") as mock_service_cls:
         service = mock_service_cls.return_value
-        service.get_env.return_value = {"A": "1", "B": "2"}
+        service.get_env_file.return_value = "A=1\nB=2\n"
 
         res = await client.get("/api/containers/abc123/env?format=text")
 
@@ -150,13 +152,16 @@ async def test_logs_stream_error_event_on_missing_container(client: AsyncClient)
     assert "Container not found" in res.text
 
 
-def test_exec_websocket_returns_error_when_container_missing():
+def test_exec_websocket_returns_error_when_container_missing(admin_session):
     with patch("app.routers.containers.DockerService") as mock_service_cls:
         service = mock_service_cls.return_value
         service.resolve_exec_command.side_effect = ValueError("Container not found")
 
         with TestClient(app) as sync_client:
-            with sync_client.websocket_connect("/api/containers/missing/exec") as ws:
+            with sync_client.websocket_connect(
+                "/api/containers/missing/exec", subprotocols=["homelab.v1", admin_session]
+            ) as ws:
+                assert ws.accepted_subprotocol == "homelab.v1"
                 error_text = ws.receive_text()
 
     assert "Container not found" in error_text

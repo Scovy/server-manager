@@ -1,3 +1,4 @@
+import { authenticatedFetch } from './authApi';
 import type { BackupItem, BackupRestoreResult } from '../types/backup';
 
 const BASE = '/api/backup';
@@ -24,7 +25,7 @@ function parseFilenameFromHeader(headerValue: string | null): string | null {
 }
 
 export async function exportConfigBackup(): Promise<{ blob: Blob; filename: string }> {
-  const res = await fetch(`${BASE}/export?mode=config`, { method: 'POST' });
+  const res = await authenticatedFetch(`${BASE}/export?mode=config`, { method: 'POST' });
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(parseErrorMessage(body, 'Failed to export backup'));
@@ -38,7 +39,7 @@ export async function exportConfigBackup(): Promise<{ blob: Blob; filename: stri
 }
 
 export async function exportFullBackup(): Promise<{ blob: Blob; filename: string }> {
-  const res = await fetch(`${BASE}/export?mode=full`, { method: 'POST' });
+  const res = await authenticatedFetch(`${BASE}/export?mode=full`, { method: 'POST' });
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(parseErrorMessage(body, 'Failed to export backup'));
@@ -51,19 +52,19 @@ export async function exportFullBackup(): Promise<{ blob: Blob; filename: string
 }
 
 export async function fetchBackups(): Promise<BackupItem[]> {
-  const res = await fetch(`${BASE}/list`);
+  const res = await authenticatedFetch(`${BASE}/list`);
   return parseJson<BackupItem[]>(res, 'Failed to list backups');
 }
 
 export async function removeBackup(filename: string): Promise<void> {
-  const res = await fetch(`${BASE}/${encodeURIComponent(filename)}`, {
+  const res = await authenticatedFetch(`${BASE}/${encodeURIComponent(filename)}`, {
     method: 'DELETE',
   });
   await parseJson<{ status: string }>(res, 'Failed to delete backup');
 }
 
 export async function importConfigBackup(file: File): Promise<BackupRestoreResult> {
-  const res = await fetch(`${BASE}/import`, {
+  const res = await authenticatedFetch(`${BASE}/import`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/gzip',

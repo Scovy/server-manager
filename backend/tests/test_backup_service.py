@@ -2,6 +2,7 @@
 
 import sqlite3
 import tarfile
+from contextlib import ExitStack
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,34 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.services.backup_service import BackupService
+from app.services.restore_transaction import RestoreTransaction
+
+
+def test_config_backup_round_trip_uses_mounted_workspace(tmp_path, monkeypatch):
+    root = tmp_path / "workspace"
+    (root / "backend").mkdir(parents=True)
+    (root / "caddy").mkdir()
+    monkeypatch.setenv("SETUP_CONFIG_ROOT", str(root))
+    monkeypatch.setattr("app.config.settings.BACKUP_DIR", str(tmp_path / "backups"))
+    monkeypatch.setattr("app.config.settings.MARKETPLACE_APPS_DIR", str(tmp_path / "apps"))
+    monkeypatch.setattr("app.config.settings.DATABASE_URL", f"sqlite:///{tmp_path}/unused.db")
+    files = {
+        ".env": "DOMAIN=home.example.com",
+        "backend/.env": "APP_NAME=example",
+        "caddy/generated_site.caddy": "home.example.com {}",
+        "caddy/generated_globals.caddy": "{ local_certs }",
+        "caddy/marketplace_apps.caddy": "# routes",
+    }
+    for relative, content in files.items():
+        (root / relative).write_text(content, encoding="utf-8")
+    service = BackupService()
+    archive = service.create_backup()
+    for relative in files:
+        (root / relative).write_text("changed", encoding="utf-8")
+    result = service.restore_backup(archive)
+    assert len(result["restored"]["config_files"]) == len(files)
+    for relative, content in files.items():
+        assert (root / relative).read_text(encoding="utf-8") == content
 
 
 def test_stage_volumes_uses_helper_when_mountpoint_unavailable(tmp_path: Path) -> None:
@@ -99,26 +128,25 @@ def test_restore_volumes_uses_helper_when_mountpoint_unavailable(tmp_path: Path)
     client = MagicMock()
     client.volumes.get.return_value = volume
 
-    with patch("app.services.backup_service.docker.from_env", return_value=client):
-        with (
-            patch.object(
-                service,
-                "_resolve_volume_helper_image",
-                return_value="helper-image",
-            ) as mock_img,
-            patch.object(service, "_restore_volume_with_helper") as mock_restore,
-        ):
-            restored = service._restore_volumes(extract_root, manifest)
-
-    assert restored == ["server-manager_backend_data"]
-    mock_img.assert_called_once_with(client)
-    mock_restore.assert_called_once_with(
-        client,
-        "helper-image",
-        "server-manager_backend_data",
-        source_dir,
-    )
-    volume.reload.assert_called_once()
+    helper = MagicMock()
+    helper.get_archive.return_value = ([b"prior volume snapshot"], {})
+    helper.exec_run.side_effect = [
+        SimpleNamespace(exit_code=0, output=b"fs 100000 100 99900 1% /volume\n100 /volume\n"),
+        SimpleNamespace(exit_code=0, output=b""),
+    ]
+    with (
+        ExitStack() as resources,
+        patch("app.services.backup_service.docker.from_env", return_value=client),
+        patch.object(service, "_resolve_volume_helper_image", return_value="helper-image"),
+        patch.object(service, "_create_volume_helper_container", return_value=helper),
+    ):
+        txn = RestoreTransaction(tmp_path)
+        resources.callback(txn.close)
+        names = service._prepare_volumes(extract_root, manifest, txn, resources)
+        assert names == ["server-manager_backend_data"]
+        helper.put_archive.assert_not_called()
+        txn.apply()
+        helper.put_archive.assert_called_once()
     client.close.assert_called_once()
 
 
@@ -254,6 +282,15 @@ def test_extract_tar_safely_allows_safe_symlink(tmp_path: Path) -> None:
 
     extract_root = tmp_path / "extract"
     extract_root.mkdir(parents=True, exist_ok=True)
+    # tarfile silently substitutes a copy on Windows without symlink privileges.
+    try:
+        (tmp_path / "capability-check").symlink_to(archive_path)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) != 1314:
+            raise
+        with pytest.raises(ValueError, match="preserve symbolic links"):
+            BackupService._extract_tar_safely(archive_path, extract_root)
+        return
     BackupService._extract_tar_safely(archive_path, extract_root)
 
     assert (extract_root / "payload" / "file.txt").read_text(encoding="utf-8") == "hello"

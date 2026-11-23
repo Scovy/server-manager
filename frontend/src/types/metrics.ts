@@ -7,6 +7,18 @@
  * - `/api/metrics/alerts`  (AlertConfig)
  */
 
+/** Counts derived from `docker ps` at snapshot time. */
+export interface ContainerSummary {
+  /** Containers currently running. */
+  running: number;
+  /** All containers regardless of state. */
+  total: number;
+  /** Containers whose health check reports unhealthy. */
+  unhealthy: number;
+  /** Containers in a restart loop. */
+  restarting: number;
+}
+
 /** Resource usage stats for a single running container. */
 export interface ContainerStat {
   /** Short container ID (first 12 chars). */
@@ -36,12 +48,33 @@ export interface MetricsSnapshot {
   disk_used_gb: number;
   /** Total disk space in gigabytes. */
   disk_total_gb: number;
+  /**
+   * Free disk space in gigabytes from the filesystem's own `free` counter
+   * (less than total-used: part of that is filesystem-level reserve).
+   * Older backends don't send it — do not compute it from used/total.
+   */
+  disk_free_gb?: number | null;
+  /**
+   * Optional device/filesystem source of the reported usage (e.g. the
+   * mount's device name such as "overlay"). Null when unknown.
+   */
+  disk_source?: string | null;
   /** Cumulative bytes sent since boot. */
   net_bytes_sent: number;
   /** Cumulative bytes received since boot. */
   net_bytes_recv: number;
   /** Per-container stats. Empty if Docker is unavailable. */
   containers: ContainerStat[];
+  /**
+   * ISO 8601 UTC timestamp (…Z) set by newer backends.
+   * Older backends omit it — clients fall back to their own receive time.
+   */
+  timestamp?: string;
+  /**
+   * Summary counts from `docker ps`. Null when Docker (or an older
+   * backend without the field) cannot provide them.
+   */
+  container_summary?: ContainerSummary | null;
 }
 
 /**

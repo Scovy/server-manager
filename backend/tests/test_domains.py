@@ -8,6 +8,8 @@ from app.models.app import App
 from app.models.setting import Setting
 from app.routers import domains as domains_router
 
+pytestmark = pytest.mark.usefixtures("admin_session")
+
 
 @pytest.mark.asyncio
 async def test_domains_overview_unconfigured(client: AsyncClient):

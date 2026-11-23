@@ -8,7 +8,8 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { logout, restoreSession } from '../api/authApi';
+import { useQueryClient } from '@tanstack/react-query';
+import { logout, restoreSession, SESSION_ENDED } from '../api/authApi';
 import type { AuthSuccessResponse, AuthUser } from '../types/auth';
 
 interface AuthContextValue {
@@ -22,6 +23,7 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const queryClient = useQueryClient();
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -36,8 +38,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    const clearSession = () => {
+      setUser(null);
+      queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== 'setup-status' });
+    };
+    window.addEventListener(SESSION_ENDED, clearSession);
     void reloadSession();
-  }, [reloadSession]);
+    return () => window.removeEventListener(SESSION_ENDED, clearSession);
+  }, [queryClient, reloadSession]);
 
   const establishSession = useCallback((payload: AuthSuccessResponse) => {
     setUser(payload.user);

@@ -5,6 +5,26 @@ from unittest.mock import patch
 import pytest
 from httpx import AsyncClient
 
+from app.services.marketplace_service import _render_compose, get_template
+
+pytestmark = pytest.mark.usefixtures("admin_session")
+
+
+def test_render_compose_references_env_file_instead_of_inline_environment():
+    compose = _render_compose(
+        get_template("gitea"),
+        "gitea-envfile",
+        3015,
+        {"SEED": "one", "TOKEN": "pa$5w"},
+        [],
+        "f" * 32,
+    )
+    # `format: raw` keeps $-values and quotes literal; the default env_file
+    # parser interpolates $VAR, strips quotes and cuts " #" comments.
+    assert "    env_file:\n      - path: .env\n        format: raw\n" in compose
+    assert "environment:" not in compose
+    assert "pa$5w" not in compose  # values live only in .env
+
 
 @pytest.mark.asyncio
 async def test_marketplace_list_returns_templates(client: AsyncClient):
@@ -119,9 +139,7 @@ async def test_marketplace_deploy_with_named_volume_writes_compose(
         )
 
     assert res.status_code == 200
-    compose = (tmp_path / "gitea-storage-demo" / "docker-compose.yml").read_text(
-        encoding="utf-8"
-    )
+    compose = (tmp_path / "gitea-storage-demo" / "docker-compose.yml").read_text(encoding="utf-8")
     assert "volumes:" in compose
     assert '"gitea-data:/data"' in compose
 

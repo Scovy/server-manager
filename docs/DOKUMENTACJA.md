@@ -967,7 +967,7 @@ flowchart TD
 1. Skonfiguruj plik środowiskowy backendu:
    ```bash
    cd backend
-   cp .env.example .env
+   python ../scripts/init-backend-env.py
    ```
 2. Zainstaluj zależności Pythona i uruchom serwer FastAPI:
    ```bash

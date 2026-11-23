@@ -10,12 +10,13 @@ from uuid import uuid4
 import bcrypt
 import jwt
 import pyotp
-from sqlalchemy import func, select
+from sqlalchemy import func, insert, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.setting import Setting
 from app.models.user import User
+from app.services.setup_service import SETUP_INITIALIZED_KEY
 
 ALGORITHM = "HS256"
 REFRESH_COOKIE_NAME = "refresh_token"
@@ -208,13 +209,20 @@ async def create_initial_admin(
     if existing_count > 0:
         raise AuthError("Initial admin account has already been created.")
 
-    user = User(
-        username=normalized_username,
-        password=hash_password(password),
-        role="admin",
-    )
-    db.add(user)
-    await db.flush()
+    initialized = await db.scalar(select(Setting.value).where(Setting.key == SETUP_INITIALIZED_KEY))
+    if initialized != "true":
+        raise AuthError("Complete initial setup before creating the administrator.")
+
+    # Recheck the empty-users condition inside the write so concurrent requests
+    # cannot both claim the installation with different usernames.
+    first_admin = select(
+        literal(normalized_username), literal(hash_password(password)), literal("admin")
+    ).where(~select(User.id).exists())
+    user = await db.scalar(insert(User).from_select(
+        ["username", "password", "role"], first_admin
+    ).returning(User))
+    if user is None:
+        raise AuthError("Initial admin account has already been created.")
     return user
 
 

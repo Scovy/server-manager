@@ -8,33 +8,74 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
+import { formatRate, rateUnit } from '../metrics/metricsSeries';
 import './MetricChart.css';
-
-export interface NetworkChartPoint {
-  time: string;
-  sent_rate_mb_s: number;
-  recv_rate_mb_s: number;
-}
 
 interface NetworkChartProps {
   title: string;
-  data: NetworkChartPoint[];
+  /** Minute-bucketed per-minute peaks in bytes/s (null = break the line). */
+  data: Array<{ ts: number; sent_rate: number | null; recv_rate: number | null }>;
+  /** Newest live RX/TX in bytes/s; null => '—', never masked as 0. */
+  currentRx: number | null;
+  currentTx: number | null;
+  /** Fixed X domain [start, end] in epoch ms (hourWindow). */
+  xDomain: [number, number];
+  /** X tick positions in epoch ms. */
+  ticks: number[];
 }
 
-function formatRate(value: number): string {
-  return `${value.toFixed(2)} MB/s`;
+function formatMinute(ts: number): string {
+  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-export default function NetworkChart({ title, data }: NetworkChartProps) {
+export default function NetworkChart({
+  title,
+  data,
+  currentRx,
+  currentTx,
+  xDomain,
+  ticks,
+}: NetworkChartProps) {
+  const rx = currentRx === null ? '—' : formatRate(currentRx);
+  const tx = currentTx === null ? '—' : formatRate(currentTx);
+
+  // One shared unit for the whole Y axis keeps tick labels narrow on
+  // mobile; the tooltip keeps fully formatted per-value units.
+  const peak = data.reduce((max, p) => Math.max(max, p.sent_rate ?? 0, p.recv_rate ?? 0), 0);
+  const { size, unit } = rateUnit(peak);
+  const axisTick = (val: unknown) => {
+    const scaled = Number(val) / size;
+    const text = scaled === 0 ? '0' : scaled < 10 ? scaled.toFixed(1) : String(Math.round(scaled));
+    return `${text} ${unit}`;
+  };
+
   return (
-    <div className="card metric-chart">
-      <h3 className="metric-chart__title">{title}</h3>
+    <article className="card metric-chart">
+      <header className="metric-chart__header">
+        <h3 className="metric-chart__title">{title}</h3>
+        <div className="metric-chart__meta">
+          <span
+            className="metric-chart__current"
+            aria-label={`Current traffic: ${currentRx === null ? 'unavailable' : `${rx} received`}, ${currentTx === null ? 'unavailable' : `${tx} sent`}`}
+          >
+            <span aria-hidden="true">↓ {rx}</span>
+            <span aria-hidden="true">↑ {tx}</span>
+          </span>
+          <span className="metric-chart__range">Last hour · per-minute peak</span>
+        </div>
+      </header>
       <div className="metric-chart__container">
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+          <LineChart data={data} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" vertical={false} />
             <XAxis
-              dataKey="time"
+              dataKey="ts"
+              type="number"
+              domain={xDomain}
+              ticks={ticks}
+              tickFormatter={formatMinute}
+              // Fixed window: overflow skews/clock drift clip instead of expanding the domain
+              allowDataOverflow
               stroke="var(--color-text-muted)"
               fontSize={11}
               tickLine={false}
@@ -42,12 +83,13 @@ export default function NetworkChart({ title, data }: NetworkChartProps) {
               tickMargin={8}
             />
             <YAxis
+              width={56}
               stroke="var(--color-text-muted)"
               fontSize={11}
               tickLine={false}
               axisLine={false}
               domain={[0, 'auto']}
-              tickFormatter={(val: unknown) => `${Number(val).toFixed(1)} MB/s`}
+              tickFormatter={axisTick}
             />
             <Tooltip
               contentStyle={{
@@ -62,6 +104,7 @@ export default function NetworkChart({ title, data }: NetworkChartProps) {
                 formatRate(Number(value) || 0),
                 String(name ?? ''),
               ]}
+              labelFormatter={(ts: unknown) => new Date(Number(ts)).toLocaleTimeString()}
               labelStyle={{ color: 'var(--color-text-muted)', marginBottom: '4px' }}
             />
             <Legend
@@ -71,25 +114,27 @@ export default function NetworkChart({ title, data }: NetworkChartProps) {
             />
             <Line
               type="monotone"
-              dataKey="sent_rate_mb_s"
-              name="Network Sent"
+              dataKey="sent_rate"
+              name="TX (sent)"
               stroke="var(--color-success)"
               strokeWidth={2}
               dot={false}
+              connectNulls={false}
               isAnimationActive={false}
             />
             <Line
               type="monotone"
-              dataKey="recv_rate_mb_s"
-              name="Network Received"
+              dataKey="recv_rate"
+              name="RX (received)"
               stroke="var(--color-accent)"
               strokeWidth={2}
               dot={false}
+              connectNulls={false}
               isAnimationActive={false}
             />
           </LineChart>
         </ResponsiveContainer>
       </div>
-    </div>
+    </article>
   );
 }

@@ -24,6 +24,8 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.metrics_history import MetricsHistory
+from app.services.alerts import ThresholdAlerts, load_alert_config
+from app.services.maintenance import MaintenanceBusy, gate
 from app.services.metrics_service import metrics_service
 
 logger = logging.getLogger(__name__)
@@ -32,7 +34,9 @@ logger = logging.getLogger(__name__)
 HISTORY_TTL_DAYS = 7
 
 
-async def _record_metrics(session_factory: async_sessionmaker[AsyncSession]) -> None:
+async def _record_metrics(
+    session_factory: async_sessionmaker[AsyncSession], alerts: ThresholdAlerts
+) -> None:
     """Take a snapshot and persist it to the database.
 
     This function is called by APScheduler every 60 seconds.
@@ -42,24 +46,29 @@ async def _record_metrics(session_factory: async_sessionmaker[AsyncSession]) -> 
         session_factory: Factory for creating async DB sessions.
     """
     try:
-        snapshot = await metrics_service.get_snapshot(include_containers=False)
-        row = MetricsHistory(
-            timestamp=datetime.utcnow(),
-            cpu_percent=snapshot.cpu_percent,
-            ram_percent=snapshot.ram_percent,
-            ram_used_mb=snapshot.ram_used_mb,
-            disk_percent=snapshot.disk_percent,
-            net_bytes_sent=snapshot.net_bytes_sent,
-            net_bytes_recv=snapshot.net_bytes_recv,
-        )
-        async with session_factory() as session:
-            session.add(row)
-            await session.commit()
-        logger.debug(
-            "Metrics snapshot saved: cpu=%.1f%% ram=%.1f%%",
-            snapshot.cpu_percent,
-            snapshot.ram_percent,
-        )
+        with gate.operation():
+            snapshot = await metrics_service.get_snapshot(include_containers=False)
+            row = MetricsHistory(
+                timestamp=datetime.utcnow(),
+                cpu_percent=snapshot.cpu_percent,
+                ram_percent=snapshot.ram_percent,
+                ram_used_mb=snapshot.ram_used_mb,
+                disk_percent=snapshot.disk_percent,
+                net_bytes_sent=snapshot.net_bytes_sent,
+                net_bytes_recv=snapshot.net_bytes_recv,
+            )
+            async with session_factory() as session:
+                config = await load_alert_config(session)
+                session.add(row)
+                await session.commit()
+            await alerts.evaluate(snapshot, config)
+            logger.debug(
+                "Metrics snapshot saved: cpu=%.1f%% ram=%.1f%%",
+                snapshot.cpu_percent,
+                snapshot.ram_percent,
+            )
+    except MaintenanceBusy:
+        return
     except Exception as e:
         logger.error("Failed to record metrics snapshot: %s", e)
 
@@ -74,19 +83,22 @@ async def _prune_old_metrics(session_factory: async_sessionmaker[AsyncSession]) 
         session_factory: Factory for creating async DB sessions.
     """
     try:
-        cutoff = datetime.utcnow() - timedelta(days=HISTORY_TTL_DAYS)
-        async with session_factory() as session:
-            result = await session.execute(
-                delete(MetricsHistory).where(MetricsHistory.timestamp < cutoff)
-            )
-            await session.commit()
-            deleted = int(getattr(result, "rowcount", 0))
-        if deleted:
-            logger.info(
-                "Pruned %d old metrics rows (older than %d days)",
-                deleted,
-                HISTORY_TTL_DAYS,
-            )
+        with gate.operation():
+            cutoff = datetime.utcnow() - timedelta(days=HISTORY_TTL_DAYS)
+            async with session_factory() as session:
+                result = await session.execute(
+                    delete(MetricsHistory).where(MetricsHistory.timestamp < cutoff)
+                )
+                await session.commit()
+                deleted = int(getattr(result, "rowcount", 0))
+            if deleted:
+                logger.info(
+                    "Pruned %d old metrics rows (older than %d days)",
+                    deleted,
+                    HISTORY_TTL_DAYS,
+                )
+    except MaintenanceBusy:
+        return
     except Exception as e:
         logger.error("Failed to prune metrics history: %s", e)
 
@@ -107,7 +119,7 @@ def start_scheduler(session_factory: async_sessionmaker[AsyncSession]) -> AsyncI
         trigger="interval",
         seconds=60,
         id="record_metrics",
-        kwargs={"session_factory": session_factory},
+        kwargs={"session_factory": session_factory, "alerts": ThresholdAlerts()},
         replace_existing=True,
     )
     scheduler.add_job(

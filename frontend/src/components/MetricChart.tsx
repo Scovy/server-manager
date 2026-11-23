@@ -1,7 +1,8 @@
 /**
- * MetricChart — Renders an AreaChart for system metrics history.
- *
- * Built with Recharts. Automatically resizes to fit its container.
+ * MetricChart — Renders an AreaChart for a single metric over the fixed
+ * one-hour window. X axis is the real numeric sample time (epoch ms),
+ * with derived tick labels; missing minute buckets arrive as null values
+ * and break the line instead of bridging gaps.
  */
 
 import {
@@ -13,38 +14,45 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import type { ChartPoint } from '../hooks/useMetricsWS';
+import type { ValuePoint } from '../metrics/metricsSeries';
 import './MetricChart.css';
 
 interface MetricChartProps {
   /** Chart title. */
   title: string;
-  /** Array of history points (from WebSocket or API). */
-  data: ChartPoint[];
-  /** Key in ChartPoint to plot on the Y axis. */
-  dataKey: keyof ChartPoint;
+  /** Minute-bucketed samples (null value = no data in that minute). */
+  data: ValuePoint[];
   /** Primary color for the area fill and line. */
   color: string;
-  /** Value unit for tooltip formatting. */
-  unit?: string;
-  /** Max Y-axis value. Defaults to 'auto'. Set to 100 for percentage charts. */
-  yMax?: number | 'auto';
+  /** Value unit for axis/tooltip formatting. */
+  unit: string;
+  /** Fixed X domain [start, end] in epoch ms (hourWindow). */
+  xDomain: [number, number];
+  /** X tick positions in epoch ms. */
+  ticks: number[];
+}
+
+function formatMinute(ts: number): string {
+  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
 export default function MetricChart({
   title,
   data,
-  dataKey,
   color,
-  unit = '',
-  yMax = 'auto',
+  unit,
+  xDomain,
+  ticks,
 }: MetricChartProps) {
-  // Generate a unique ID for the stable gradient definition
-  const gradientId = `color-${dataKey as string}`;
+  // Stable, page-unique gradient id derived from the title
+  const gradientId = `grad-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
 
   return (
-    <div className="card metric-chart">
-      <h3 className="metric-chart__title">{title}</h3>
+    <article className="card metric-chart">
+      <header className="metric-chart__header">
+        <h3 className="metric-chart__title">{title}</h3>
+        <span className="metric-chart__range">Last hour · per-minute peak</span>
+      </header>
       <div className="metric-chart__container">
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
@@ -56,7 +64,13 @@ export default function MetricChart({
             </defs>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" vertical={false} />
             <XAxis
-              dataKey="time"
+              dataKey="ts"
+              type="number"
+              domain={xDomain}
+              ticks={ticks}
+              tickFormatter={formatMinute}
+              // Fixed window: overflow skews/clock drift clip instead of expanding the domain
+              allowDataOverflow
               stroke="var(--color-text-muted)"
               fontSize={11}
               tickLine={false}
@@ -69,7 +83,7 @@ export default function MetricChart({
               tickLine={false}
               axisLine={false}
               tickFormatter={(val: unknown) => `${Number(val)}${unit}`}
-              domain={[0, yMax]}
+              domain={[0, 100]}
             />
             <Tooltip
               contentStyle={{
@@ -81,20 +95,22 @@ export default function MetricChart({
               }}
               itemStyle={{ color: 'var(--color-text-primary)', fontWeight: 600 }}
               formatter={(value: unknown) => [`${(Number(value) || 0).toFixed(1)}${unit}`, title]}
+              labelFormatter={(ts: unknown) => new Date(Number(ts)).toLocaleTimeString()}
               labelStyle={{ color: 'var(--color-text-muted)', marginBottom: '4px' }}
             />
             <Area
               type="monotone"
-              dataKey={dataKey}
+              dataKey="value"
               stroke={color}
               strokeWidth={2}
               fillOpacity={1}
               fill={`url(#${gradientId})`}
+              connectNulls={false}
               isAnimationActive={false} // Disable to prevent jerky re-renders on rapid WS updates
             />
           </AreaChart>
         </ResponsiveContainer>
       </div>
-    </div>
+    </article>
   );
 }

@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { yaml as yamlLang } from '@codemirror/lang-yaml';
 import { parseDocument } from 'yaml';
+import { EventSource } from 'eventsource';
+import { authenticatedFetch } from '../api/authApi';
 import {
   fetchCompose,
   fetchContainer,
@@ -76,6 +78,37 @@ function statusBadgeClass(status: string): string {
   return 'badge-danger';
 }
 
+// Backend errors can embed raw Docker internals (local socket/npipe URLs);
+// those never belong in the UI, only in the browser console.
+function sanitizeDetail(detail: string): string {
+  const withoutUrls = detail
+    .replace(/\b(?:https?|http\+docker|unix|docker|ws|tcp):\/\/\S+/gi, '(see server logs)')
+    .trim();
+  return withoutUrls.length > 140 ? `${withoutUrls.slice(0, 137)}…` : withoutUrls;
+}
+
+interface LoadError {
+  title: string;
+  body: string;
+}
+
+// Only the backend's explicit "Docker unavailable" detail claims Docker is
+// down; offline/network noise gets the generic title. payload.detail is never
+// shown verbatim (it can embed local socket URLs).
+function toLoadError(err: unknown): LoadError {
+  const raw = err instanceof Error ? err.message : String(err);
+  if (/docker unavailable/i.test(raw)) {
+    return {
+      title: 'Docker unavailable',
+      body: 'The server could not reach the Docker daemon. Check that Docker is running on the server, then try again.',
+    };
+  }
+  return {
+    title: 'Could not load containers',
+    body: 'The request failed before any container data came back. Try again in a moment.',
+  };
+}
+
 function resolveContainerUrl(
   container: ContainerDetail | null,
   appUrlsByContainer: Record<string, string>,
@@ -139,76 +172,115 @@ export default function Containers() {
   const [selected, setSelected] = useState<ContainerDetail | null>(null);
   const [stats, setStats] = useState<ContainerStats | null>(null);
   const [logs, setLogs] = useState<string>('');
+  const [logsError, setLogsError] = useState<string>('');
   const [composeText, setComposeText] = useState<string>('');
   const [composePath, setComposePath] = useState<string>('');
   const [envRows, setEnvRows] = useState<EnvRow[]>([]);
   const [includeStopped, setIncludeStopped] = useState<boolean>(true);
   const [appUrlsByContainer, setAppUrlsByContainer] = useState<Record<string, string>>({});
-  const [loading, setLoading] = useState<boolean>(false);
+  const [hasLoaded, setHasLoaded] = useState<boolean>(false);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [loadError, setLoadError] = useState<LoadError | null>(null);
+  const [detailsLoading, setDetailsLoading] = useState<boolean>(false);
+  const [recoveryNotice, setRecoveryNotice] = useState<string>('');
+  const [search, setSearch] = useState<string>('');
   const [error, setError] = useState<string>('');
   const [message, setMessage] = useState<string>('');
+  const selectedIdRef = useRef<string>('');
+  const loadSeqRef = useRef<number>(0);
 
-  const sortedContainers = useMemo(
-    () => [...containers].sort((a, b) => a.name.localeCompare(b.name)),
-    [containers],
-  );
+  const visibleContainers = useMemo(() => {
+    const sorted = [...containers].sort((a, b) => a.name.localeCompare(b.name));
+    const query = search.trim().toLowerCase();
+    if (!query) return sorted;
+    return sorted.filter(
+      (container) =>
+        container.name.toLowerCase().includes(query) ||
+        container.image.toLowerCase().includes(query),
+    );
+  }, [containers, search]);
   const openAppUrl = useMemo(
     () => resolveContainerUrl(selected, appUrlsByContainer),
     [selected, appUrlsByContainer],
   );
 
-  const loadContainers = useCallback(async (nextSelectedId?: string) => {
-    setLoading(true);
-    setError('');
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
+
+  // Deliberately independent of selectedId: selecting a container must never
+  // re-run the list fetch (that caused reload loops on missing selections).
+  const loadContainers = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
+    setRefreshing(true);
     try {
       const data = await fetchContainers(includeStopped);
+      if (seq !== loadSeqRef.current) return; // a newer request already superseded this one
+      // Publish the list immediately; the optional app-URL map must not delay it.
       setContainers(data);
-      try {
-        const installedApps = await fetchInstalledApps();
-        const nextMap = installedApps.reduce<Record<string, string>>((acc, app: InstalledApp) => {
-          if (app.app_url) {
-            acc[app.container_name] = app.app_url;
-            acc[app.app_name] = app.app_url;
-          }
-          return acc;
-        }, {});
-        setAppUrlsByContainer(nextMap);
-      } catch {
-        setAppUrlsByContainer({});
-      }
-      const preferredId = nextSelectedId || selectedId;
+      setHasLoaded(true);
+      setLoadError(null);
+      const preferredId = selectedIdRef.current;
       const preferredExists = preferredId
         ? data.some((container) => container.id === preferredId)
         : false;
-      const nextId = preferredExists ? preferredId : data[0]?.id || '';
-      setSelectedId(nextId);
+      setSelectedId(preferredExists ? preferredId : data[0]?.id || '');
+
+      void fetchInstalledApps()
+        .then((installedApps) => {
+          if (seq !== loadSeqRef.current) return;
+          setAppUrlsByContainer(
+            installedApps.reduce<Record<string, string>>((acc, app: InstalledApp) => {
+              if (app.app_url) {
+                acc[app.container_name] = app.app_url;
+                acc[app.app_name] = app.app_url;
+              }
+              return acc;
+            }, {}),
+          );
+        })
+        .catch(() => {
+          // Keep the previous app-URL mapping; it is not worth failing over.
+        });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load containers');
+      if (seq !== loadSeqRef.current) return;
+      // Fixed log line only: raw errors can carry URLs or auth material.
+      console.error('Failed to load containers');
+      // Keep the last good list; the banner marks it as possibly out of date.
+      setLoadError(toLoadError(err));
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setRefreshing(false);
     }
-  }, [includeStopped, selectedId]);
+  }, [includeStopped]);
 
   useEffect(() => {
     void loadContainers();
   }, [loadContainers]);
 
   useEffect(() => {
+    // Drop the previous container's detail state immediately so name/stats/
+    // compose/env/logs can never mix two different containers, and clear the
+    // notices that belonged to the old selection. The 404-recovery notice uses
+    // its own channel (recoveryNotice) so navigation doesn't erase it.
+    setSelected(null);
+    setStats(null);
+    setLogs('');
+    setLogsError('');
+    setComposeText('');
+    setComposePath('');
+    setEnvRows([]);
+    setMessage('');
+    setError('');
+
     if (!selectedId) {
-      setSelected(null);
-      setStats(null);
-      setLogs('');
-      setComposeText('');
-      setComposePath('');
-      setEnvRows([]);
+      setDetailsLoading(false);
       return;
     }
 
+    setDetailsLoading(true);
+
     let cancelled = false;
     let recoveredMissingContainer = false;
-    setError('');
-    setMessage('');
-    setLogs('');
 
     const loadDetails = async () => {
       try {
@@ -243,33 +315,41 @@ export default function Containers() {
             setEnvRows([]);
           }
         }
+        if (!cancelled) setDetailsLoading(false);
       } catch (err) {
-        if (!cancelled) {
-          const detail = err instanceof Error ? err.message : 'Failed to load container details';
-          setError(detail);
-          if (/not found|404/i.test(detail)) {
-            recoveredMissingContainer = true;
-            setMessage('Previously selected container no longer exists. Switched to an available one.');
-            void loadContainers('');
-          }
+        if (cancelled) return;
+        const detail = err instanceof Error ? err.message : 'Failed to load container details';
+        if (/not found|404/i.test(detail)) {
+          // One recovery refetch per effect run; if the ID is still listed the
+          // panel shows the failed state instead of an eternal spinner.
+          recoveredMissingContainer = true;
+          setDetailsLoading(false);
+          setRecoveryNotice('Selected container was not found. Refreshing the container list.');
+          void loadContainers();
+        } else {
+          setDetailsLoading(false);
+          setError(sanitizeDetail(detail));
         }
       }
     };
 
     void loadDetails();
 
-    const source = new EventSource(`/api/containers/${selectedId}/logs?tail=200`);
+    const logsUrl = new URL(`/api/containers/${selectedId}/logs?tail=200`, window.location.origin);
+    const source = new EventSource(logsUrl, { fetch: authenticatedFetch });
     source.onmessage = (event) => {
       try {
         const payload = JSON.parse(event.data) as { logs?: string; error?: string };
         if (cancelled) return;
 
         if (typeof payload.error === 'string' && payload.error.length > 0) {
-          setError(payload.error);
           if (!recoveredMissingContainer && /not found|404/i.test(payload.error)) {
             recoveredMissingContainer = true;
-            setMessage('Selected container disappeared. Switched to an available one.');
-            void loadContainers('');
+            setRecoveryNotice('Selected container was not found. Refreshing the container list.');
+            void loadContainers();
+          } else {
+            // Log failures stay in the Logs panel; they never take down the list.
+            setLogsError(sanitizeDetail(payload.error));
           }
           return;
         }
@@ -290,7 +370,7 @@ export default function Containers() {
     };
     source.addEventListener('error', () => {
       if (!cancelled) {
-        setMessage('Logs stream disconnected, retrying...');
+        setLogsError('Logs stream disconnected — reconnecting…');
       }
     });
 
@@ -304,9 +384,10 @@ export default function Containers() {
           const detail = err instanceof Error ? err.message : '';
           if (/not found|404/i.test(detail)) {
             recoveredMissingContainer = true;
-            setMessage('Selected container disappeared. Switched to an available one.');
-            void loadContainers('');
+            setRecoveryNotice('Selected container was not found. Refreshing the container list.');
+            void loadContainers();
           }
+          // Stats are decorative; transient poll errors keep the last known values.
         });
     }, 3000);
 
@@ -318,20 +399,29 @@ export default function Containers() {
   }, [selectedId, loadContainers]);
 
   async function onAction(action: ContainerAction) {
-    if (!selectedId) return;
+    const id = selectedId;
+    if (!id) return;
     setMessage('');
     setError('');
+    setRecoveryNotice('');
     try {
-      await runContainerAction(selectedId, action);
-      setMessage(`Action ${action} executed successfully.`);
-      await loadContainers(selectedId);
+      await runContainerAction(id, action);
+      // The user may have switched containers while the request was in flight;
+      // don't drop stale notices onto the new selection.
+      if (selectedIdRef.current === id) setMessage(`Action ${action} executed successfully.`);
+      await loadContainers();
     } catch (err) {
-      setError(err instanceof Error ? err.message : `Failed to ${action} container`);
+      if (selectedIdRef.current === id) {
+        setError(
+          sanitizeDetail(err instanceof Error ? err.message : `Failed to ${action} container`),
+        );
+      }
     }
   }
 
   async function onRemove() {
-    if (!selectedId) return;
+    const id = selectedId;
+    if (!id) return;
     const confirmed = window.confirm(
       'Remove this container? You can also remove anonymous volumes in the next step.',
     );
@@ -340,42 +430,57 @@ export default function Containers() {
     const removeVolumes = window.confirm('Also remove anonymous volumes?');
     setMessage('');
     setError('');
+    setRecoveryNotice('');
 
     try {
-      await removeContainer(selectedId, removeVolumes);
-      setMessage('Container removed successfully.');
-      await loadContainers('');
+      await removeContainer(id, removeVolumes);
+      if (selectedIdRef.current === id) setMessage('Container removed successfully.');
+      await loadContainers();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to remove container');
+      if (selectedIdRef.current === id) {
+        setError(sanitizeDetail(err instanceof Error ? err.message : 'Failed to remove container'));
+      }
     }
   }
 
   async function onSaveCompose() {
-    if (!selectedId) return;
+    const id = selectedId;
+    if (!id) return;
     setMessage('');
     setError('');
+    setRecoveryNotice('');
     try {
       const parsed = parseDocument(composeText);
       if (parsed.errors.length > 0) {
         throw new Error(`Invalid YAML: ${parsed.errors[0].message}`);
       }
-      await updateCompose(selectedId, composeText);
-      setMessage('Compose file saved. Click Apply Changes to recreate services.');
+      await updateCompose(id, composeText);
+      if (selectedIdRef.current === id) {
+        setMessage('Compose file saved. Click Apply Changes to recreate services.');
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save compose file');
+      if (selectedIdRef.current === id) {
+        setError(sanitizeDetail(err instanceof Error ? err.message : 'Failed to save compose file'));
+      }
     }
   }
 
   async function onSaveEnv() {
-    if (!selectedId) return;
+    const id = selectedId;
+    if (!id) return;
     setMessage('');
     setError('');
+    setRecoveryNotice('');
     try {
       const nextEnvText = envRowsToText(envRows);
-      await updateEnvText(selectedId, nextEnvText);
-      setMessage('.env file saved. Click Apply Changes to recreate services.');
+      await updateEnvText(id, nextEnvText);
+      if (selectedIdRef.current === id) {
+        setMessage('.env file saved. Click Apply Changes to recreate services.');
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save env file');
+      if (selectedIdRef.current === id) {
+        setError(sanitizeDetail(err instanceof Error ? err.message : 'Failed to save env file'));
+      }
     }
   }
 
@@ -417,15 +522,19 @@ export default function Containers() {
   }
 
   async function onApplyChanges() {
-    if (!selectedId) return;
+    const id = selectedId;
+    if (!id) return;
     setMessage('');
     setError('');
+    setRecoveryNotice('');
     try {
-      const output = await applyContainerChanges(selectedId);
-      setMessage(`Apply completed: ${output}`);
-      await loadContainers(selectedId);
+      const output = await applyContainerChanges(id);
+      if (selectedIdRef.current === id) setMessage(`Apply completed: ${output}`);
+      await loadContainers();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to apply compose changes');
+      if (selectedIdRef.current === id) {
+        setError(sanitizeDetail(err instanceof Error ? err.message : 'Failed to apply compose changes'));
+      }
     }
   }
 
@@ -446,46 +555,127 @@ export default function Containers() {
             />
             Include stopped
           </label>
-          <button className="btn btn-secondary" onClick={() => void loadContainers(selectedId)}>
+          <button
+            className="btn btn-secondary"
+            onClick={() => void loadContainers()}
+            disabled={refreshing}
+            data-testid="containers-refresh"
+          >
             Refresh
           </button>
         </div>
       </div>
 
-      {error && <div className="containers-page__notice containers-page__notice--error">{error}</div>}
-      {message && <div className="containers-page__notice containers-page__notice--success">{message}</div>}
+      {error && (
+        <div className="containers-page__notice containers-page__notice--error" role="alert">
+          {error}
+        </div>
+      )}
+      {message && (
+        <div className="containers-page__notice containers-page__notice--success" role="status">
+          {message}
+        </div>
+      )}
+      {recoveryNotice && (
+        <div className="containers-page__notice containers-page__notice--success" role="status">
+          {recoveryNotice}
+        </div>
+      )}
 
-      <div className="containers-grid">
-        <section className="card containers-list">
-          <h2>Containers</h2>
-          {loading ? <p>Loading containers...</p> : null}
-          {!loading && sortedContainers.length === 0 ? <p>No containers found.</p> : null}
+      {refreshing && hasLoaded && (
+        <p className="containers-page__refreshing" role="status" data-testid="containers-refreshing">
+          Refreshing…
+        </p>
+      )}
+      {loadError && containers.length > 0 && (
+        <div
+          className="containers-page__notice containers-page__notice--stale"
+          role="alert"
+          data-testid="containers-stale"
+        >
+          <span>Couldn't refresh — the list below may be out of date.</span>
+          <button
+            className="btn btn-secondary"
+            onClick={() => void loadContainers()}
+            disabled={refreshing}
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
-          <div className="containers-list__items">
-            {sortedContainers.map((container) => (
-              <button
-                key={container.id}
-                className={`containers-list__item ${selectedId === container.id ? 'is-active' : ''}`}
-                onClick={() => setSelectedId(container.id)}
-              >
-                <div className="containers-list__row">
-                  <strong>{container.name}</strong>
-                  <span className={`badge ${statusBadgeClass(container.status)}`}>{container.status}</span>
-                </div>
-                <div className="containers-list__meta">
-                  <span>{container.image}</span>
-                  <span>{container.id}</span>
-                </div>
-              </button>
-            ))}
-          </div>
-        </section>
+      {!hasLoaded && !loadError ? (
+        <div className="card containers-empty" role="status" data-testid="containers-loading">
+          <p>Loading containers…</p>
+        </div>
+      ) : loadError && containers.length === 0 ? (
+        <div className="card containers-empty" role="alert" data-testid="containers-error">
+          <h2 className="containers-empty__title">{loadError.title}</h2>
+          <p>{loadError.body}</p>
+          <button
+            className="btn btn-primary"
+            onClick={() => void loadContainers()}
+            disabled={refreshing}
+            data-testid="containers-retry"
+          >
+            Retry
+          </button>
+        </div>
+      ) : (
+        <div className="containers-grid">
+          <section className="card containers-list">
+            <h2>Containers</h2>
+            <input
+              type="search"
+              className="input containers-list__search"
+              placeholder="Search by name or image…"
+              aria-label="Search containers"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              data-testid="containers-search"
+            />
+            {visibleContainers.length === 0 ? (
+              <p className="containers-list__empty" data-testid="containers-empty-list">
+                {search.trim() ? 'No containers match your search.' : 'No containers found.'}
+              </p>
+            ) : (
+              <div className="containers-list__items" data-testid="containers-list">
+                {visibleContainers.map((container) => (
+                  <button
+                    key={container.id}
+                    className={`containers-list__item ${selectedId === container.id ? 'is-active' : ''}`}
+                    aria-pressed={selectedId === container.id}
+                    onClick={() => setSelectedId(container.id)}
+                  >
+                    <div className="containers-list__row">
+                      <strong>{container.name}</strong>
+                      <span className={`badge ${statusBadgeClass(container.status)}`}>
+                        {container.status}
+                      </span>
+                    </div>
+                    <div className="containers-list__meta">
+                      <span title={container.image}>{container.image}</span>
+                      <span title={container.id}>{container.id}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </section>
 
-        <section className="card containers-detail">
-          <h2>Details</h2>
-          {!selected ? (
-            <p>Select a container to manage it.</p>
-          ) : (
+          <section className="card containers-detail" data-testid="containers-detail">
+            <h2>Details</h2>
+            {/* The id gate makes one frame of "detail A + terminal B" impossible:
+                the panel only renders when the payload matches the selection. */}
+            {!selected || selected.id !== selectedId ? (
+              <p className="containers-list__empty">
+                {selectedId
+                  ? detailsLoading
+                    ? 'Loading container details…'
+                    : 'Failed to load container details.'
+                  : 'Select a container to manage it.'}
+              </p>
+            ) : (
             <>
               <div className="containers-detail__stats">
                 <div>
@@ -532,6 +722,11 @@ export default function Containers() {
               <div className="containers-detail__split">
                 <div>
                   <h3>Logs</h3>
+                  {logsError && (
+                    <p className="containers-logs-error" role="status" data-testid="containers-logs-error">
+                      {logsError}
+                    </p>
+                  )}
                   <pre className="containers-terminal">{logs || 'Waiting for logs...'}</pre>
                 </div>
                 <div>
@@ -567,6 +762,7 @@ export default function Containers() {
                         value={row.key}
                         onChange={(e) => updateEnvRow(row.id, 'key', e.target.value)}
                         placeholder="ENV_KEY"
+                        aria-label="Variable key"
                       />
                       <input
                         className="input"
@@ -574,6 +770,7 @@ export default function Containers() {
                         value={row.value}
                         onChange={(e) => updateEnvRow(row.id, 'value', e.target.value)}
                         placeholder="value"
+                        aria-label="Variable value"
                       />
                       <div className="containers-env-table__actions">
                         {row.isSecret ? (
@@ -581,7 +778,11 @@ export default function Containers() {
                             {row.masked ? 'Show' : 'Hide'}
                           </button>
                         ) : null}
-                        <button className="btn btn-danger" onClick={() => removeEnvRow(row.id)}>
+                        <button
+                          className="btn btn-danger"
+                          onClick={() => removeEnvRow(row.id)}
+                          aria-label={row.key ? `Remove variable ${row.key}` : 'Remove variable'}
+                        >
                           Remove
                         </button>
                       </div>
@@ -601,9 +802,10 @@ export default function Containers() {
                 <ExecTerminal containerId={selectedId} />
               </div>
             </>
-          )}
-        </section>
-      </div>
+            )}
+          </section>
+        </div>
+      )}
     </div>
   );
 }

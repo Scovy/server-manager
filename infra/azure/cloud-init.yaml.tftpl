@@ -47,9 +47,7 @@ write_files:
         cp .env.example .env
       fi
 
-      if [ ! -f backend/.env ] && [ -f backend/.env.example ]; then
-        cp backend/.env.example backend/.env
-      fi
+      python3 scripts/init-backend-env.py
 
       # Bootstrap with HTTP so setup wizard is always reachable first.
       sed -i "s|^SITE_ADDRESS=.*|SITE_ADDRESS=${bootstrap_site_address}|" .env || true

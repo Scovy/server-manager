@@ -10,11 +10,12 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from fastapi import FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.database import async_session
+from app.dependencies.auth import require_admin_user, require_websocket_admin
 from app.routers import (
     auth,
     backup,
@@ -26,6 +27,7 @@ from app.routers import (
     metrics,
     setup,
 )
+from app.services.maintenance import MaintenanceMiddleware
 from app.services.scheduler import start_scheduler, stop_scheduler
 
 logger = logging.getLogger(__name__)
@@ -78,6 +80,8 @@ app.add_middleware(
 )
 
 # Configure logging
+app.add_middleware(MaintenanceMiddleware)
+
 logging.basicConfig(
     level=logging.DEBUG if settings.DEBUG else logging.INFO,
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
@@ -86,10 +90,18 @@ logging.basicConfig(
 # Include routers
 app.include_router(health.router)
 app.include_router(auth.router)
-app.include_router(backup.router)
-app.include_router(metrics.router)
-app.include_router(containers.router)
-app.include_router(docker_resources.router)
-app.include_router(marketplace.router)
-app.include_router(domains.router)
 app.include_router(setup.router)
+
+management = APIRouter(dependencies=[Depends(require_admin_user)])
+management.include_router(backup.router)
+management.include_router(metrics.router)
+management.include_router(containers.router)
+management.include_router(docker_resources.router)
+management.include_router(marketplace.router)
+management.include_router(domains.router)
+app.include_router(management)
+
+streams = APIRouter(dependencies=[Depends(require_websocket_admin)])
+streams.include_router(metrics.streams)
+streams.include_router(containers.streams)
+app.include_router(streams)

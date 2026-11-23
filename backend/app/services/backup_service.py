@@ -5,11 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
 import tarfile
 from collections.abc import Iterable
+from contextlib import ExitStack, closing
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -19,11 +21,14 @@ import docker
 from docker.errors import APIError, DockerException, NotFound
 
 from app.config import settings
+from app.services.docker_mounts import panel_data_volume
 from app.services.marketplace_service import (
     MarketplaceVolumeSpec,
     _deploy_with_docker_sdk,
     get_template,
 )
+from app.services.restore_transaction import Change, RestoreTransaction
+from app.services.setup_service import resolve_env_paths
 
 
 class BackupService:
@@ -37,7 +42,6 @@ class BackupService:
 
     def __init__(self) -> None:
         self._backend_root = Path(__file__).resolve().parents[2]
-        self._project_root = self._backend_root.parent
         self._backup_dir = Path(settings.BACKUP_DIR).expanduser().resolve()
         self._backup_dir.mkdir(parents=True, exist_ok=True)
 
@@ -127,41 +131,33 @@ class BackupService:
                 "volumes": [],
             }
 
-            database_archive_path = str(manifest.get("database_archive_path") or "").strip()
-            if database_archive_path:
-                db_source = extract_root / database_archive_path
-                if db_source.exists() and db_source.is_file():
-                    db_target = self._resolve_database_path()
-                    db_target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(db_source, db_target)
+            with ExitStack() as resources:
+                txn = RestoreTransaction(self.backup_dir())
+                resources.callback(txn.close)
+                database = manifest.get("database_archive_path")
+                apps = manifest.get("apps_archive_path")
+                if database:
+                    source = self._archive_member(extract_root, database, directory=False)
+                    txn.prepare_path(source, self._resolve_database_path(), "db")
                     restored["database"] = True
-
-            apps_archive_path = str(manifest.get("apps_archive_path") or "").strip()
-            if apps_archive_path:
-                apps_source = extract_root / apps_archive_path
-                if apps_source.exists() and apps_source.is_dir():
-                    apps_target = self._apps_dir()
-                    apps_target.parent.mkdir(parents=True, exist_ok=True)
-                    if apps_target.exists():
-                        if apps_target.is_dir() and not apps_target.is_symlink():
-                            shutil.rmtree(apps_target)
-                        else:
-                            apps_target.unlink()
-                    shutil.copytree(apps_source, apps_target)
+                if apps:
+                    source = self._archive_member(extract_root, apps, directory=True)
+                    txn.prepare_path(source, self._apps_dir(), "dir")
                     restored["apps_dir"] = True
-
-            restored_config_files: list[str] = []
-            for archive_rel, target in self._config_target_map().items():
-                source = extract_root / archive_rel
-                if not source.exists() or not source.is_file():
-                    continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source, target)
-                restored_config_files.append(str(target))
-            restored["config_files"] = restored_config_files
-
-            if manifest.get("backup_type") == self.BACKUP_TYPE_FULL:
-                restored["volumes"] = self._restore_volumes(extract_root, manifest)
+                config_paths = manifest.get("config_archive_paths")
+                targets = self._config_target_map()
+                if not isinstance(config_paths, list) or not all(
+                    isinstance(rel, str) and rel in targets for rel in config_paths
+                ):
+                    raise ValueError("Invalid backup configuration file list")
+                for rel in dict.fromkeys(config_paths):
+                    source = self._archive_member(extract_root, rel, directory=False)
+                    txn.prepare_path(source, targets[rel], "file")
+                    restored["config_files"].append(str(targets[rel]))
+                if manifest.get("backup_type") == self.BACKUP_TYPE_FULL:
+                    restored["volumes"] = self._prepare_volumes(extract_root, manifest,
+                                                               txn, resources)
+                txn.apply()
 
             marketplace_restore: dict[str, list[str]] = {"restored": [], "errors": []}
             if restored["database"] and restored["apps_dir"]:
@@ -207,18 +203,14 @@ class BackupService:
         return Path(settings.MARKETPLACE_APPS_DIR).expanduser().resolve()
 
     def _config_target_map(self) -> dict[str, Path]:
+        project_env, backend_env = resolve_env_paths()
+        caddy = project_env.parent / "caddy"
         return {
-            "config/backend.env": self._backend_root / ".env",
-            "config/project.env": self._project_root / ".env",
-            "config/caddy.generated_globals.caddy": self._project_root
-            / "caddy"
-            / "generated_globals.caddy",
-            "config/caddy.generated_site.caddy": self._project_root
-            / "caddy"
-            / "generated_site.caddy",
-            "config/caddy.marketplace_apps.caddy": self._project_root
-            / "caddy"
-            / "marketplace_apps.caddy",
+            "config/backend.env": backend_env,
+            "config/project.env": project_env,
+            "config/caddy.generated_globals.caddy": caddy / "generated_globals.caddy",
+            "config/caddy.generated_site.caddy": caddy / "generated_site.caddy",
+            "config/caddy.marketplace_apps.caddy": caddy / "marketplace_apps.caddy",
         }
 
     def _stage_database_snapshot(self, stage_root: Path, checksums: dict[str, str]) -> str | None:
@@ -230,7 +222,10 @@ class BackupService:
         target_file = stage_root / target_rel
         target_file.parent.mkdir(parents=True, exist_ok=True)
 
-        with sqlite3.connect(str(source_db)) as src, sqlite3.connect(str(target_file)) as dst:
+        with (
+            closing(sqlite3.connect(source_db)) as src,
+            closing(sqlite3.connect(target_file)) as dst,
+        ):
             src.backup(dst)
 
         checksums[target_rel.as_posix()] = self._sha256(target_file)
@@ -275,9 +270,10 @@ class BackupService:
         volumes_payload: list[dict[str, Any]] = []
         helper_image: str | None = None
         try:
+            own_volume = panel_data_volume(client)
             for volume in client.volumes.list():
                 name = str(getattr(volume, "name", "")).strip()
-                if not name or "/" in name:
+                if not name or "/" in name or name == own_volume:
                     continue
 
                 mountpoint_raw = str(volume.attrs.get("Mountpoint", "")).strip()
@@ -325,69 +321,124 @@ class BackupService:
             "items": volumes_payload,
         }
 
-    def _restore_volumes(self, extract_root: Path, manifest: dict[str, Any]) -> list[str]:
-        volumes_section = manifest.get("volumes")
-        if not isinstance(volumes_section, dict):
-            raise ValueError("Backup manifest is missing volume metadata")
+    @staticmethod
+    def _archive_member(root: Path, name: Any, *, directory: bool) -> Path:
+        if not isinstance(name, str) or not name or Path(name).is_absolute():
+            raise ValueError("Invalid archive member")
+        path = (root / name).resolve()
+        if path == root.resolve() or not path.is_relative_to(root.resolve()):
+            raise ValueError("Archive member outside backup")
+        exists = path.is_dir() if directory else path.is_file()
+        if not exists:
+            raise ValueError(f"Missing archive member: {name}")
+        return path
 
-        items = volumes_section.get("items")
-        if not isinstance(items, list):
-            raise ValueError("Backup volume metadata is invalid")
-        if not items:
+    def _prepare_volumes(
+        self, root: Path, manifest: dict[str, Any], txn: RestoreTransaction, resources: ExitStack
+    ) -> list[str]:
+        section = manifest.get("volumes")
+        if not isinstance(section, dict) or not isinstance(section.get("items"), list):
+            raise ValueError("Invalid volume metadata")
+        if not section["items"]:
             return []
+        client = docker.from_env()
+        resources.callback(client.close)
+        own = panel_data_volume(client)
+        entries: dict[str, tuple[dict[str, Any], Path]] = {}
+        for item in section["items"]:
+            if not isinstance(item, dict):
+                raise ValueError("Invalid volume entry")
+            name = item.get("name")
+            if not isinstance(name, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", name):
+                raise ValueError("Invalid volume name")
+            if name == own:
+                continue
+            if name in entries:
+                raise ValueError(f"Duplicate volume: {name}")
+            entries[name] = (item, self._archive_member(root, item.get("archive_path"),
+                                                        directory=True))
+        if not entries:
+            return []
+        image = self._resolve_volume_helper_image(client)
+        paused = set()
+        for name in entries:
+            for container in client.containers.list(filters={"volume": name}):
+                if container.id in paused or container.status != "running":
+                    continue
+                if container.id.startswith(os.environ.get("HOSTNAME", "") or "!"):
+                    raise ValueError("Cannot pause the backend during restore")
+                container.pause()
+                resources.callback(container.unpause)
+                paused.add(container.id)
+        for name, (item, directory) in entries.items():
+            incoming = txn.directory / f"new-volume-{name}.tar"
+            with tarfile.open(incoming, "w") as tar:
+                for child in sorted(directory.iterdir()):
+                    tar.add(child, arcname=child.name)
+            self._prepare_volume(client, image, name, item, incoming, txn, resources)
+        return list(entries)
 
+    def _prepare_volume(
+        self, client: Any, image: str, name: str, item: dict[str, Any], incoming: Path,
+        txn: RestoreTransaction, resources: ExitStack,
+    ) -> None:
         try:
-            client = docker.from_env()
-        except DockerException as exc:
-            raise ValueError(f"Docker unavailable for volume restore: {exc}") from exc
+            client.volumes.get(name)
+            existed = True
+        except NotFound:
+            existed = False
+        previous = txn.directory / f"previous-volume-{name}.tar"
+        # For a missing volume the helper is prepared before any live contents change.
+        # Remove this newly created resource if this or any later preparation fails.
+        keep = [existed]
+        if not existed:
+            volume = client.volumes.create(name=name, driver=item.get("driver") or "local",
+                                           labels=item.get("labels") or {})
 
-        restored_names: list[str] = []
-        helper_image: str | None = None
-        try:
-            for item in items:
-                if not isinstance(item, dict):
-                    raise ValueError("Backup volume item is invalid")
+            def remove_unused() -> None:
+                if not keep[0]:
+                    volume.remove()
 
-                name = str(item.get("name", "")).strip()
-                if not name or "/" in name:
-                    raise ValueError("Backup contains invalid volume name")
+            resources.callback(remove_unused)
+        helper = self._create_volume_helper_container(client, image, name, "rw")
+        resources.callback(self._remove_helper_container, helper)
+        mount = self.VOLUME_HELPER_MOUNT_PATH
+        if existed:
+            stream, _ = helper.get_archive(f"{mount}/.")
+            with previous.open("wb") as handle:
+                for chunk in stream:
+                    handle.write(chunk)
+        capacity = helper.exec_run(["sh", "-ec", 'df -Pk "$1" | tail -1; du -sk "$1"',
+                                    "capacity", mount])
+        if capacity.exit_code:
+            raise ValueError(f"Cannot check disk space for volume {name}")
+        disk, used = capacity.output.decode().splitlines()
+        available = (int(disk.split()[-3]) + int(used.split()[0])) * 1024
+        if available < incoming.stat().st_size:
+            raise ValueError(f"Insufficient disk space for volume {name}")
 
-                driver = str(item.get("driver", "local") or "local").strip() or "local"
-                labels = item.get("labels")
-                labels_payload = labels if isinstance(labels, dict) else {}
-                archive_rel = str(item.get("archive_path", "")).strip()
-                if not archive_rel:
-                    raise ValueError(f"Missing volume archive path for {name}")
+        def replace(tar_path: Path) -> None:
+            clear = helper.exec_run(["sh", "-ec", 'find "$1" -mindepth 1 -maxdepth 1 '
+                                     '-exec rm -rf -- {} +', "restore", mount])
+            if clear.exit_code:
+                raise ValueError(f"Cannot clear volume {name}")
+            with tar_path.open("rb") as handle:
+                if not helper.put_archive(mount, handle):
+                    raise ValueError(f"Cannot restore volume {name}")
 
-                source_dir = (extract_root / archive_rel).resolve()
-                if not source_dir.is_relative_to(extract_root.resolve()):
-                    raise ValueError(f"Unsafe archive path for volume {name}")
-                if not source_dir.exists() or not source_dir.is_dir():
-                    raise ValueError(f"Missing archived data for volume {name}")
+        def apply() -> None:
+            replace(incoming)
+            keep[0] = True
 
-                try:
-                    volume = client.volumes.get(name)
-                except NotFound:
-                    volume = client.volumes.create(name=name, driver=driver, labels=labels_payload)
-                volume.reload()
+        def undo() -> None:
+            if existed:
+                replace(previous)
+            else:
+                keep[0] = False
 
-                mountpoint_raw = str(volume.attrs.get("Mountpoint", "")).strip()
-                mountpoint = Path(mountpoint_raw)
-                if mountpoint_raw and mountpoint.exists() and mountpoint.is_dir():
-                    self._replace_directory_contents(source_dir, mountpoint)
-                else:
-                    if helper_image is None:
-                        helper_image = self._resolve_volume_helper_image(client)
-                    self._restore_volume_with_helper(client, helper_image, name, source_dir)
-                restored_names.append(name)
-        except APIError as exc:
-            raise ValueError(f"Docker API error during volume restore: {exc.explanation}") from exc
-        except OSError as exc:
-            raise ValueError(f"Failed to restore Docker volumes: {exc}") from exc
-        finally:
-            client.close()
-
-        return restored_names
+        txn.changes.append(
+            Change(f"volume:{name}", previous.name if existed else None, apply, undo)
+        )
 
     def _restore_marketplace_apps_from_backup_database(
         self, database_path: Path
@@ -642,50 +693,6 @@ class BackupService:
         finally:
             self._remove_helper_container(helper)
 
-    def _restore_volume_with_helper(
-        self,
-        client: Any,
-        helper_image: str,
-        volume_name: str,
-        source_dir: Path,
-    ) -> None:
-        helper = self._create_volume_helper_container(
-            client=client,
-            helper_image=helper_image,
-            volume_name=volume_name,
-            mount_mode="rw",
-        )
-        try:
-            result = helper.exec_run(
-                [
-                    "sh",
-                    "-lc",
-                    (
-                        "rm -rf "
-                        f"{self.VOLUME_HELPER_MOUNT_PATH}/* "
-                        f"{self.VOLUME_HELPER_MOUNT_PATH}/.[!.]* "
-                        f"{self.VOLUME_HELPER_MOUNT_PATH}/..?*"
-                    ),
-                ]
-            )
-            if result.exit_code != 0:
-                stderr = (result.output or b"").decode("utf-8", errors="ignore").strip()
-                raise ValueError(
-                    f"Failed to clear data before restoring volume {volume_name}: "
-                    f"{stderr or 'unknown error'}"
-                )
-
-            archive_payload = self._create_tar_payload(source_dir)
-            accepted = helper.put_archive(self.VOLUME_HELPER_MOUNT_PATH, archive_payload)
-            if not accepted:
-                raise ValueError(f"Failed to restore data into volume {volume_name}")
-        except APIError as exc:
-            raise ValueError(
-                f"Docker API error while restoring volume {volume_name}: {exc.explanation}"
-            ) from exc
-        finally:
-            self._remove_helper_container(helper)
-
     def _create_volume_helper_container(
         self,
         client: Any,
@@ -696,7 +703,9 @@ class BackupService:
         try:
             helper = client.containers.create(
                 image=helper_image,
-                command=["sh", "-lc", "while true; do sleep 3600; done"],
+                entrypoint=["sh", "-c"],
+                command=["exec sleep 86400"],
+                network_disabled=True,
                 volumes={
                     volume_name: {
                         "bind": self.VOLUME_HELPER_MOUNT_PATH,
@@ -747,30 +756,6 @@ class BackupService:
         return extract_root
 
     @staticmethod
-    def _create_tar_payload(source_dir: Path) -> bytes:
-        with TemporaryDirectory(prefix="backup-volume-pack-") as tmp:
-            archive_path = Path(tmp) / "volume.tar"
-            with tarfile.open(archive_path, "w") as tar:
-                for item in sorted(source_dir.iterdir()):
-                    tar.add(item, arcname=item.name, recursive=True)
-            return archive_path.read_bytes()
-
-    @staticmethod
-    def _replace_directory_contents(source: Path, destination: Path) -> None:
-        for child in destination.iterdir():
-            if child.is_dir() and not child.is_symlink():
-                shutil.rmtree(child)
-            else:
-                child.unlink(missing_ok=True)
-
-        for child in source.iterdir():
-            target = destination / child.name
-            if child.is_dir() and not child.is_symlink():
-                shutil.copytree(child, target)
-            else:
-                shutil.copy2(child, target)
-
-    @staticmethod
     def _sha256(path: Path) -> str:
         digest = hashlib.sha256()
         with path.open("rb") as handle:
@@ -793,11 +778,16 @@ class BackupService:
         destination_abs = destination.resolve()
         try:
             with tarfile.open(archive_path, "r:*") as tar:
-                for member in tar.getmembers():
+                members = tar.getmembers()
+                if sum(member.size for member in members) > shutil.disk_usage(destination).free:
+                    raise ValueError("Insufficient disk space to extract backup")
+                for member in members:
                     target = (destination / member.name).resolve()
                     if not target.is_relative_to(destination_abs):
                         raise ValueError("Backup archive contains unsafe file paths")
                 tar.extractall(path=destination, filter="data")
+                if any(m.issym() and not (destination / m.name).is_symlink() for m in members):
+                    raise ValueError("The destination filesystem could not preserve symbolic links")
         except tarfile.TarError as exc:
             raise ValueError("Backup archive contains unsafe file paths") from exc
 
@@ -827,6 +817,10 @@ class BackupService:
         return payload
 
     def _verify_checksums(self, extract_root: Path, checksums: dict[str, Any]) -> None:
+        files = {p.relative_to(extract_root).as_posix() for p in extract_root.rglob("*")
+                 if p.is_file() and p != extract_root / self.MANIFEST_PATH}
+        if files != set(checksums):
+            raise ValueError("Backup file list does not match manifest checksums")
         for rel_path, expected in checksums.items():
             if not isinstance(rel_path, str) or not isinstance(expected, str):
                 raise ValueError("Backup checksums section is invalid")

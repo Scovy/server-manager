@@ -5,6 +5,8 @@ Provides template catalog endpoints used by the frontend marketplace page.
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
 from typing import NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -23,6 +25,7 @@ from app.services.marketplace_service import (
     MarketplaceTemplate,
     build_marketplace_app_url,
     deploy_template,
+    deployment_lock,
     get_container_status,
     get_template,
     list_templates,
@@ -85,7 +88,17 @@ async def deploy_marketplace_template(
     db: AsyncSession = Depends(get_db),
 ) -> MarketplaceDeployResult:
     """Deploy a marketplace template using generated docker compose files."""
-    existing = await db.execute(select(App).where(App.app_name == payload.app_name))
+    try:
+        with deployment_lock(payload.app_name.strip()):
+            return await _deploy_and_record(payload, db)
+    except ValueError as exc:
+        _handle_marketplace_error(exc)
+
+
+async def _deploy_and_record(
+    payload: DeployTemplatePayload, db: AsyncSession
+) -> MarketplaceDeployResult:
+    existing = await db.execute(select(App).where(App.app_name == payload.app_name.strip()))
     if existing.scalar_one_or_none() is not None:
         raise HTTPException(status_code=400, detail="Application with this name already exists")
 
@@ -100,7 +113,7 @@ async def deploy_marketplace_template(
         ],
     }
     try:
-        result = deploy_template(request)
+        result = await asyncio.to_thread(deploy_template, request)
         db.add(
             App(
                 template_id=result["template_id"],
@@ -123,6 +136,8 @@ async def deploy_marketplace_template(
             result["host_port"],
             base_domain,
         )
+        await db.commit()
+        (Path(result["app_dir"]) / ".deployment-pending").unlink(missing_ok=True)
         return result
     except ValueError as exc:
         _handle_marketplace_error(exc)

@@ -14,6 +14,7 @@ from pathlib import Path
 import docker
 from docker.errors import DockerException, NotFound
 from sqlalchemy import func, select
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.setting import Setting
@@ -79,7 +80,7 @@ def _repo_root() -> Path:
     return candidates[0]
 
 
-def _resolve_env_paths() -> tuple[Path, Path]:
+def resolve_env_paths() -> tuple[Path, Path]:
     """Resolve root and backend env paths in both dev and container layouts."""
     root = _repo_root()
     root_env = root / ".env"
@@ -346,7 +347,7 @@ def run_preflight(payload: SetupPayload) -> SetupPreflightResult:
                     )
                 )
 
-    root_env, backend_env = _resolve_env_paths()
+    root_env, backend_env = resolve_env_paths()
     for label, env_path in (("root_env", root_env), ("backend_env", backend_env)):
         try:
             parent = env_path.parent
@@ -406,6 +407,16 @@ async def initialize_setup(db: AsyncSession, payload: SetupPayload) -> dict[str,
             "preflight": _serialize_preflight(result),
         }
 
+    # Reserve the first run in the same transaction before touching shared files.
+    claim = insert(Setting).values(key=SETUP_INITIALIZED_KEY, value="true")
+    claimed = await db.scalar(claim.on_conflict_do_update(
+        index_elements=[Setting.key],
+        set_={"value": "true"},
+        where=Setting.value.is_distinct_from("true"),
+    ).returning(Setting.key))
+    if claimed is None:
+        return {"status": "already_initialized"}
+
     domain = _normalize_domain(payload.domain)
     https_enabled = payload.enable_https
     acme_ca = (
@@ -414,7 +425,7 @@ async def initialize_setup(db: AsyncSession, payload: SetupPayload) -> dict[str,
         else "https://acme-v02.api.letsencrypt.org/directory"
     )
 
-    root_env, backend_env = _resolve_env_paths()
+    root_env, backend_env = resolve_env_paths()
 
     _upsert_env_value(root_env, "DOMAIN", domain)
     _upsert_env_value(root_env, "ACME_EMAIL", payload.acme_email.strip())
@@ -434,7 +445,6 @@ async def initialize_setup(db: AsyncSession, payload: SetupPayload) -> dict[str,
     _upsert_env_value(backend_env, "CORS_ORIGINS", ",".join(payload.cors_origins))
 
     values = {
-        SETUP_INITIALIZED_KEY: "true",
         "setup_domain": domain,
         "setup_acme_email": payload.acme_email.strip(),
         "setup_https_enabled": "true" if https_enabled else "false",

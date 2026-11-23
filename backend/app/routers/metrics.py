@@ -11,108 +11,40 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
-import httpx
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_db
+from app.dependencies.auth import WS_PROTOCOL
 from app.models.metrics_history import MetricsHistory
 from app.models.setting import Setting
-from app.services.metrics_service import ContainerStat, MetricsSnapshot, metrics_service
+from app.services.alerts import ALERT_CONFIG_KEY, load_alert_config
+from app.services.metrics_service import (
+    ContainerStat,
+    ContainerSummary,
+    MetricsSnapshot,
+    metrics_service,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["metrics"])
+streams = APIRouter()
 
 # Seconds between WebSocket metric pushes
 WS_INTERVAL = settings.METRICS_WS_INTERVAL_SECONDS
 CONTAINER_REFRESH_INTERVAL = settings.METRICS_CONTAINER_REFRESH_SECONDS
 
-# Settings key for alert configuration
-ALERT_CONFIG_KEY = "alert_config"
-
-# Default alert thresholds and webhook
-DEFAULT_ALERT_CONFIG: dict[str, Any] = {
-    "cpu_threshold": 80,
-    "ram_threshold": 85,
-    "disk_threshold": 90,
-    "webhook_url": "",
-}
-
-
-# ── Helpers ────────────────────────────────────────────────────────────────────
-
-
-async def _get_alert_config(db: AsyncSession) -> dict[str, Any]:
-    """Load alert configuration from the settings table.
-
-    Returns the stored JSON value, or DEFAULT_ALERT_CONFIG if not yet set.
-
-    Args:
-        db: Async database session.
-
-    Returns:
-        Alert configuration dictionary.
-    """
-    row = await db.execute(select(Setting).where(Setting.key == ALERT_CONFIG_KEY))
-    setting = row.scalar_one_or_none()
-    if setting is None or not setting.value:
-        return DEFAULT_ALERT_CONFIG.copy()
-    try:
-        data = json.loads(str(setting.value))
-        if not isinstance(data, dict):
-            return DEFAULT_ALERT_CONFIG.copy()
-        return dict(data)
-    except (json.JSONDecodeError, ValueError, TypeError):
-        return DEFAULT_ALERT_CONFIG.copy()
-
-
-async def _maybe_send_alert(snapshot: MetricsSnapshot, config: dict[str, Any]) -> None:
-    """Fire a Discord/generic webhook if any metric exceeds its threshold.
-
-    Args:
-        snapshot: Current metrics snapshot.
-        config: Alert configuration (thresholds + webhook_url).
-    """
-    webhook_url = config.get("webhook_url", "")
-    if not webhook_url:
-        return
-
-    alerts: list[str] = []
-    if snapshot.cpu_percent >= config.get("cpu_threshold", 80):
-        alerts.append(
-            f"🔴 CPU: **{snapshot.cpu_percent:.1f}%** (threshold {config['cpu_threshold']}%)"
-        )
-    if snapshot.ram_percent >= config.get("ram_threshold", 85):
-        alerts.append(
-            f"🔴 RAM: **{snapshot.ram_percent:.1f}%** (threshold {config['ram_threshold']}%)"
-        )
-    if snapshot.disk_percent >= config.get("disk_threshold", 90):
-        alerts.append(
-            f"🔴 Disk: **{snapshot.disk_percent:.1f}%** (threshold {config['disk_threshold']}%)"
-        )
-
-    if not alerts:
-        return
-
-    payload = {"content": "**⚠️ Homelab Dashboard Alert**\n" + "\n".join(alerts)}
-    try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            await client.post(webhook_url, json=payload)
-    except Exception as e:
-        logger.warning("Failed to send alert webhook: %s", e)
-
-
 # ── WebSocket /ws/metrics ──────────────────────────────────────────────────────
 
 
-@router.websocket("/ws/metrics")
-async def ws_metrics(websocket: WebSocket, db: AsyncSession = Depends(get_db)) -> None:
+@streams.websocket("/ws/metrics")
+async def ws_metrics(websocket: WebSocket) -> None:
     """WebSocket endpoint that pushes live system metrics on each interval tick.
 
     Sends a JSON object matching the ``MetricsSnapshot`` schema on each tick.
@@ -121,6 +53,7 @@ async def ws_metrics(websocket: WebSocket, db: AsyncSession = Depends(get_db)) -
     Message shape::
 
         {
+          "timestamp": "2026-11-23T12:00:00.123456Z",
           "cpu_percent": 12.4,
           "ram_percent": 48.3,
           "ram_used_mb": 7812,
@@ -128,21 +61,30 @@ async def ws_metrics(websocket: WebSocket, db: AsyncSession = Depends(get_db)) -
           "disk_percent": 55.0,
           "disk_used_gb": 110.5,
           "disk_total_gb": 200.0,
+          "disk_free_gb": 89.5,
+          "disk_source": "overlay",
           "net_bytes_sent": 12345678,
           "net_bytes_recv": 98765432,
           "containers": [
             {"id": "abc123", "name": "nginx", "status": "running",
              "cpu_percent": 0.5, "mem_usage_mb": 64.0, "mem_limit_mb": 512.0}
-          ]
+          ],
+          "container_summary": {"running": 2, "total": 5, "unhealthy": 1, "restarting": 0}
         }
+
+    ``timestamp`` is server-side UTC ("Z") of the host sample, not the end of
+    the Docker stats pass. ``container_summary`` is ``null`` until a reliable
+    Docker listing has been fetched — it is never guessed.
     """
-    await websocket.accept()
+    await websocket.accept(subprotocol=WS_PROTOCOL)
     logger.info("WebSocket client connected: %s", websocket.client)
 
-    alert_config = await _get_alert_config(db)
-    alert_cooldown: dict[str, datetime] = {}  # metric → last alert time
     last_containers: list[ContainerStat] = []
-    last_container_refresh = 0.0
+    last_summary: ContainerSummary | None = None
+    # Time of the last COMPLETED refresh attempt (None = never attempted).
+    # An empty container list / null summary is a valid state, so throttling
+    # must not key off the data — only off this timestamp.
+    last_container_refresh: float | None = None
     container_refresh_task: asyncio.Task[MetricsSnapshot] | None = None
 
     try:
@@ -158,35 +100,31 @@ async def ws_metrics(websocket: WebSocket, db: AsyncSession = Depends(get_db)) -
                 try:
                     container_snapshot = container_refresh_task.result()
                     last_containers = container_snapshot.containers
-                    last_container_refresh = now_monotonic
+                    last_summary = container_snapshot.container_summary
                 except Exception as e:
+                    # Keep the last known stats, but never guess the summary.
+                    last_summary = None
                     logger.debug("Container refresh task failed: %s", e)
                 finally:
+                    # Throttle from the finished ATTEMPT — success, empty list
+                    # or exception — so failures don't trigger per-tick retries.
+                    last_container_refresh = now_monotonic
                     container_refresh_task = None
 
-            if (
-                container_refresh_task is None
-                and (
-                    not last_containers
-                    or (now_monotonic - last_container_refresh) >= CONTAINER_REFRESH_INTERVAL
-                )
+            # First refresh fires immediately; afterwards the interval applies
+            # regardless of an empty result, null summary or a failed attempt.
+            if container_refresh_task is None and (
+                last_container_refresh is None
+                or (now_monotonic - last_container_refresh) >= CONTAINER_REFRESH_INTERVAL
             ):
                 container_refresh_task = asyncio.create_task(
                     metrics_service.get_snapshot(include_containers=True)
                 )
 
             snapshot = await metrics_service.get_snapshot(include_containers=False)
-            snapshot = snapshot.model_copy(update={"containers": last_containers})
-
-            # Check alerts (max once per 5 min per metric to avoid spam)
-            now = datetime.utcnow()
-            should_alert = any(
-                (now - alert_cooldown.get(k, datetime.min)).total_seconds() > 300
-                for k in ("cpu", "ram", "disk")
+            snapshot = snapshot.model_copy(
+                update={"containers": last_containers, "container_summary": last_summary}
             )
-            if should_alert:
-                await _maybe_send_alert(snapshot, alert_config)
-                alert_cooldown = {k: now for k in ("cpu", "ram", "disk")}
 
             await websocket.send_text(snapshot.model_dump_json())
             await asyncio.sleep(WS_INTERVAL)
@@ -204,6 +142,20 @@ async def ws_metrics(websocket: WebSocket, db: AsyncSession = Depends(get_db)) -
 # ── GET /api/metrics/history ───────────────────────────────────────────────────
 
 
+def _naive_utc(value: datetime) -> datetime:
+    """Normalize an (optionally offset-carrying) query param to naive UTC.
+
+    ``metrics_history`` rows are stored as naive UTC; a param like
+    ``2026-11-23T14:00:00+02:00`` must not be compared against them as-is.
+    """
+    return value.astimezone(timezone.utc).replace(tzinfo=None) if value.tzinfo else value
+
+
+def _iso_utc_z(value: datetime) -> str:
+    """Format a naive-UTC DB datetime as ISO 8601 with a ``Z`` suffix."""
+    return value.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 @router.get("/api/metrics/history")
 async def get_metrics_history(
     db: AsyncSession = Depends(get_db),
@@ -211,25 +163,27 @@ async def get_metrics_history(
     to_ts: datetime | None = Query(None, alias="to", description="End time (ISO 8601)"),
     limit: int = Query(500, ge=1, le=2000, description="Maximum number of rows to return"),
 ) -> list[dict[str, Any]]:
-    """Return stored metrics history, optionally filtered by time range.
+    """Return the latest stored metrics history rows, optionally filtered by time range.
 
     Rows are sampled from the ``metrics_history`` table, which is populated
-    every 60 seconds by the background scheduler.
+    every 60 seconds by the background scheduler. The newest ``limit`` rows
+    (within the range) are selected first, then returned oldest-first.
 
     Args:
         db: Async database session.
-        from_ts: Optional start of time range.
-        to_ts: Optional end of time range. Defaults to now.
+        from_ts: Optional start of time range (may carry a UTC offset).
+        to_ts: Optional end of time range (may carry a UTC offset).
         limit: Maximum rows to return (default 500, max 2000).
 
     Returns:
-        List of metric snapshot dictionaries, ordered oldest-first.
+        List of metric snapshot dictionaries, ordered oldest-first, timestamps
+        as ISO 8601 UTC with a ``Z`` suffix.
 
     Example response item::
 
         {
           "id": 42,
-          "timestamp": "2024-11-15T03:00:00",
+          "timestamp": "2024-11-15T03:00:00Z",
           "cpu_percent": 14.2,
           "ram_percent": 52.1,
           "ram_used_mb": 8421,
@@ -238,22 +192,29 @@ async def get_metrics_history(
           "net_bytes_recv": 987654321
         }
     """
-    stmt = select(MetricsHistory).order_by(MetricsHistory.timestamp.asc())
+    # Descending order + limit selects the *latest* N in the range;
+    # id desc breaks ties for identical timestamps (same-second inserts).
+    stmt = select(MetricsHistory).order_by(
+        MetricsHistory.timestamp.desc(), MetricsHistory.id.desc()
+    )
 
     if from_ts:
-        stmt = stmt.where(MetricsHistory.timestamp >= from_ts)
+        stmt = stmt.where(MetricsHistory.timestamp >= _naive_utc(from_ts))
     if to_ts:
-        stmt = stmt.where(MetricsHistory.timestamp <= to_ts)
+        stmt = stmt.where(MetricsHistory.timestamp <= _naive_utc(to_ts))
 
     stmt = stmt.limit(limit)
 
     result = await db.execute(stmt)
-    rows = result.scalars().all()
+    rows = list(result.scalars().all())
+
+    # Clients receive the selected newest rows oldest-first.
+    rows.reverse()
 
     return [
         {
             "id": row.id,
-            "timestamp": row.timestamp.isoformat(),
+            "timestamp": _iso_utc_z(row.timestamp),
             "cpu_percent": row.cpu_percent,
             "ram_percent": row.ram_percent,
             "ram_used_mb": row.ram_used_mb,
@@ -284,7 +245,7 @@ async def get_alert_config(db: AsyncSession = Depends(get_db)) -> dict[str, Any]
           "webhook_url": "https://discord.com/api/webhooks/..."
         }
     """
-    return await _get_alert_config(db)
+    return await load_alert_config(db)
 
 
 # ── PUT /api/metrics/alerts ────────────────────────────────────────────────────
@@ -313,14 +274,16 @@ async def update_alert_config(
     """
     from fastapi import HTTPException
 
-    current = await _get_alert_config(db)
+    current = await load_alert_config(db)
     current.update(config)
 
     # Validate thresholds are in 0–100
     for key in ("cpu_threshold", "ram_threshold", "disk_threshold"):
-        val = current.get(key)
-        if val is not None and not (0 <= int(val) <= 100):
+        value = current.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 100:
             raise HTTPException(status_code=400, detail=f"{key} must be between 0 and 100")
+    if not isinstance(current.get("webhook_url"), str):
+        raise HTTPException(status_code=400, detail="Webhook URL must be a string")
 
     serialized = json.dumps(current)
 
@@ -334,5 +297,5 @@ async def update_alert_config(
         db.add(Setting(key=ALERT_CONFIG_KEY, value=serialized))
 
     await db.commit()
-    logger.info("Alert config updated: %s", current)
+    logger.info("Alert configuration updated")
     return current

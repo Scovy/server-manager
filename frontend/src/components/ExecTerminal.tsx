@@ -2,14 +2,10 @@ import { useEffect, useRef } from 'react';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import 'xterm/css/xterm.css';
+import { openAdminSocket } from '../api/authApi';
 
 interface ExecTerminalProps {
   containerId: string;
-}
-
-function buildWsUrl(containerId: string): string {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${window.location.host}/api/containers/${containerId}/exec?cmd=/bin/sh`;
 }
 
 export default function ExecTerminal({ containerId }: ExecTerminalProps) {
@@ -33,27 +29,25 @@ export default function ExecTerminal({ containerId }: ExecTerminalProps) {
     term.open(terminalRef.current);
     fit.fit();
 
-    const ws = new WebSocket(buildWsUrl(containerId));
-
-    ws.onopen = () => {
-      term.writeln('Connected to container exec session.');
-      term.write('\r\n');
-    };
-
-    ws.onmessage = (event) => {
-      term.write(String(event.data));
-    };
-
-    ws.onerror = () => {
-      term.writeln('\r\n[terminal error]');
-    };
-
-    ws.onclose = () => {
-      term.writeln('\r\n[session closed] shell exited or container is not running');
-    };
+    const controller = new AbortController();
+    let ws: WebSocket | undefined;
+    const path = `/api/containers/${encodeURIComponent(containerId)}/exec`;
+    void openAdminSocket(path, controller.signal).then((socket) => {
+      if (controller.signal.aborted) {
+        socket.close();
+        return;
+      }
+      ws = socket;
+      socket.onopen = () => term.writeln('Connected to container exec session.');
+      socket.onmessage = (event) => term.write(String(event.data));
+      socket.onerror = () => term.writeln('\r\n[terminal error]');
+      socket.onclose = () => term.writeln('\r\n[session closed]');
+    }).catch(() => {
+      if (!controller.signal.aborted) term.writeln('Could not open an authenticated terminal.');
+    });
 
     const disposable = term.onData((data: string) => {
-      if (ws.readyState === WebSocket.OPEN) {
+      if (ws?.readyState === WebSocket.OPEN) {
         ws.send(data);
       }
     });
@@ -64,7 +58,11 @@ export default function ExecTerminal({ containerId }: ExecTerminalProps) {
     return () => {
       window.removeEventListener('resize', onResize);
       disposable.dispose();
-      ws.close();
+      controller.abort();
+      if (ws) {
+        ws.onclose = ws.onerror = ws.onmessage = ws.onopen = null;
+        ws.close();
+      }
       term.dispose();
     };
   }, [containerId]);

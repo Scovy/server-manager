@@ -9,14 +9,21 @@ All Docker operations are wrapped in try/except so the service degrades
 gracefully when Docker Engine is unavailable.
 """
 
+import functools
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 import docker
 import psutil
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+
+# Container states shown by a default `docker ps` listing. Health inspects and
+# per-container stats are collected only for these; stopped containers get
+# neither a stats call nor an inspect.
+_STATS_STATUSES = frozenset({"running", "paused", "restarting"})
 
 
 class ContainerStat(BaseModel):
@@ -39,6 +46,27 @@ class ContainerStat(BaseModel):
     mem_limit_mb: float
 
 
+class ContainerSummary(BaseModel):
+    """Runtime container counts for the dashboard card.
+
+    Totals and state counts come from a single *sparse* Docker listing (one
+    API call, no per-container inspect); ``unhealthy`` comes from the health
+    inspects of active containers only — stopped containers are never
+    inspected, and the whole summary is ``None`` whenever health is unknown.
+
+    Attributes:
+        running: Containers currently in the ``running`` state.
+        total: All containers known to Docker (including stopped ones).
+        unhealthy: Active containers whose health check reports ``unhealthy``.
+        restarting: Containers crash-looping under a restart policy.
+    """
+
+    running: int
+    total: int
+    unhealthy: int
+    restarting: int
+
+
 class MetricsSnapshot(BaseModel):
     """Point-in-time snapshot of host system metrics.
 
@@ -50,9 +78,19 @@ class MetricsSnapshot(BaseModel):
         disk_percent: Primary filesystem usage percentage (0–100).
         disk_used_gb: Disk space used in gigabytes.
         disk_total_gb: Total disk space in gigabytes.
+        disk_free_gb: Real free space (psutil ``.free`` — includes the FS
+            reserve, unlike ``total - used``) in gigabytes; ``None`` when the
+            caller did not provide it (backwards-compatible default).
         net_bytes_sent: Cumulative bytes sent since boot.
         net_bytes_recv: Cumulative bytes received since boot.
         containers: Per-container stats (empty list if Docker unavailable).
+        timestamp: Server-side time (UTC, ISO 8601 "Z") of the host sample,
+            captured before the slow Docker stats pass.
+        disk_source: Device backing the measured path ``/`` as seen from this
+            backend process (e.g. ``overlay`` inside Docker, ``/dev/sda1`` on a
+            host install) — ``None`` if it cannot be determined.
+        container_summary: Runtime counts across all containers, or ``None``
+            when Docker was unavailable (never guessed).
     """
 
     cpu_percent: float
@@ -62,9 +100,13 @@ class MetricsSnapshot(BaseModel):
     disk_percent: float
     disk_used_gb: float
     disk_total_gb: float
+    disk_free_gb: float | None = None
     net_bytes_sent: int
     net_bytes_recv: int
     containers: list[ContainerStat] = []
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    disk_source: str | None = None
+    container_summary: ContainerSummary | None = None
 
 
 def _calc_container_cpu(stats: dict[str, Any]) -> float:
@@ -97,6 +139,59 @@ def _calc_container_cpu(stats: dict[str, Any]) -> float:
     return 0.0
 
 
+@functools.lru_cache(maxsize=None)
+def _disk_source(path: str = "/") -> str | None:
+    """Device backing ``path`` as seen from this backend process.
+
+    The disk metrics measure ``psutil.disk_usage("/")`` — i.e. the backend's
+    own root filesystem (the container overlay when deployed in Docker), not
+    the host's root disk. This label lets the dashboard say which filesystem
+    the numbers describe. No mounts are read or changed beyond this lookup.
+
+    Mount layout is static, so each path is resolved once per process and
+    cached — the scan must not repeat on every ~0.8 s WS tick.
+    """
+    try:
+        parts = psutil.disk_partitions(all=True)
+    except Exception:  # different platforms expose different mounts
+        return None  # transient — not cached, retried next tick
+    best_device: str | None = None
+    best_len = -1
+    for part in parts:
+        mountpoint = part.mountpoint
+        prefix = mountpoint if mountpoint.endswith("/") else mountpoint + "/"
+        if not (path == mountpoint or path.startswith(prefix)):
+            continue
+        if len(mountpoint) > best_len:
+            best_device, best_len = part.device, len(mountpoint)
+    return best_device
+
+
+def _listed_state(attrs: Any) -> str:
+    """Container state from listing/inspect attrs, without the SDK property.
+
+    In a sparse listing ``State`` is a plain string (``"running"`` …); after
+    ``reload()`` it is a dict with ``Status``/``Health``. The human ``Status``
+    text ("Up 2 hours") is never parsed.
+    """
+    state = attrs.get("State")
+    if isinstance(state, dict):
+        state = state.get("Status")
+    return str(state).lower()
+
+
+def _listed_name(attrs: Any) -> str:
+    """Container name from listing (``Names``) or inspect (``Name``) attrs.
+
+    The SDK's ``Container.name`` reloads sparse objects (a hidden inspect);
+    this reads the attrs directly instead.
+    """
+    names = attrs.get("Names")
+    if isinstance(names, list) and names:
+        return str(names[0]).lstrip("/")
+    return str(attrs.get("Name", "")).lstrip("/")
+
+
 class MetricsService:
     """Collects system and container metrics on demand.
 
@@ -124,8 +219,11 @@ class MetricsService:
         return await asyncio.to_thread(self._get_snapshot_sync, include_containers)
 
     def _get_snapshot_sync(self, include_containers: bool = True) -> MetricsSnapshot:
-        """Synchronous implementation of metrics collection.
-        """
+        """Synchronous implementation of metrics collection."""
+        # Host-sample time, captured before the slow Docker stats pass, so the
+        # `timestamp` refers to the sample itself, not the end of collection.
+        timestamp = datetime.now(timezone.utc)
+
         # ── Host metrics (psutil) ─────────────────────────────────────────────
         cpu = psutil.cpu_percent(interval=None)
 
@@ -138,17 +236,54 @@ class MetricsService:
         disk_percent = disk.percent
         disk_used_gb = round(disk.used / (1024**3), 2)
         disk_total_gb = round(disk.total / (1024**3), 2)
+        disk_free_gb = round(disk.free / (1024**3), 2)
+        disk_source = _disk_source()
 
         net = psutil.net_io_counters()
         net_sent = net.bytes_sent
         net_recv = net.bytes_recv
 
         containers: list[ContainerStat] = []
+        summary: ContainerSummary | None = None
         if include_containers:
-            # ── Per-container stats (Docker SDK) ─────────────────────────────
+            # ── Per-container stats + runtime summary (Docker SDK) ────────────
+            client: Any = None
             try:
                 client = docker.from_env()
-                for container in client.containers.list():
+                # One SPARSE listing of all containers: a single API call that
+                # inspects nothing — the SDK's default listing inspects every
+                # entry, which would tax stopped containers on every refresh.
+                listed = client.containers.list(all=True, sparse=True)
+                running = restarting = 0
+                active: list[Any] = []
+                for container in listed:
+                    state = _listed_state(container.attrs)
+                    if state == "running":
+                        running += 1
+                    elif state == "restarting":
+                        restarting += 1
+                    if state in _STATS_STATUSES:
+                        active.append(container)
+
+                # Health lives only in inspect — reload the same active set a
+                # non-sparse listing would have inspected; stopped are skipped.
+                unhealthy = 0
+                summary_reliable = True
+                for container in active:
+                    try:
+                        container.reload()
+                        state = container.attrs.get("State")
+                        if isinstance(state, dict):
+                            health = state.get("Health") or {}
+                            if health.get("Status") == "unhealthy":
+                                unhealthy += 1
+                        else:
+                            summary_reliable = False
+                    except Exception as e:
+                        # No inspect → health unknown for this container; the
+                        # summary is dropped entirely rather than guessed.
+                        summary_reliable = False
+                        logger.debug("Error inspecting container %s: %s", container.short_id, e)
                     try:
                         stats = container.stats(stream=False)
                         cpu_pct = _calc_container_cpu(stats)
@@ -158,8 +293,8 @@ class MetricsService:
                         containers.append(
                             ContainerStat(
                                 id=container.short_id,
-                                name=container.name.lstrip("/"),
-                                status=container.status,
+                                name=_listed_name(container.attrs),
+                                status=_listed_state(container.attrs),
                                 cpu_percent=cpu_pct,
                                 mem_usage_mb=round(mem_usage / (1024 * 1024), 2),
                                 mem_limit_mb=round(mem_limit / (1024 * 1024), 2),
@@ -171,9 +306,19 @@ class MetricsService:
                             container.short_id,
                             e,
                         )
-                client.close()
+                if summary_reliable:
+                    summary = ContainerSummary(
+                        running=running,
+                        total=len(listed),
+                        unhealthy=unhealthy,
+                        restarting=restarting,
+                    )
             except Exception as e:
                 logger.warning("Docker unavailable — skipping container stats: %s", e)
+            finally:
+                # The old code leaked the client when the listing itself failed.
+                if client is not None:
+                    client.close()
 
         return MetricsSnapshot(
             cpu_percent=cpu,
@@ -183,9 +328,13 @@ class MetricsService:
             disk_percent=disk_percent,
             disk_used_gb=disk_used_gb,
             disk_total_gb=disk_total_gb,
+            disk_free_gb=disk_free_gb,
             net_bytes_sent=net_sent,
             net_bytes_recv=net_recv,
             containers=containers,
+            timestamp=timestamp,
+            disk_source=disk_source,
+            container_summary=summary,
         )
 
 

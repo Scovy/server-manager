@@ -1,3 +1,4 @@
+import { authenticatedFetch } from './authApi';
 import type { DomainsOverview } from '../types/domains';
 
 const BASE = '/api/domains';
@@ -17,12 +18,12 @@ export async function fetchDomainsOverview(liveChecks = false): Promise<DomainsO
   }
   const query = params.toString();
   const url = query ? `${BASE}?${query}` : BASE;
-  const res = await fetch(url);
+  const res = await authenticatedFetch(url);
   return handleJson<DomainsOverview>(res, 'Failed to fetch domains overview');
 }
 
 export async function syncDomainRoutes(): Promise<{ status: string; message: string }> {
-  const res = await fetch(`${BASE}/sync`, {
+  const res = await authenticatedFetch(`${BASE}/sync`, {
     method: 'POST',
   });
   return handleJson<{ status: string; message: string }>(res, 'Failed to sync domain routes');

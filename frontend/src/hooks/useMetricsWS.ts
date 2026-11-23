@@ -2,45 +2,44 @@
  * useMetricsWS — React hook for the /ws/metrics WebSocket stream.
  *
  * Connects to the backend WebSocket and pushes live MetricsSnapshot
- * data. Maintains a rolling history of the last 60 data points for
- * chart rendering.
+ * data. Maintains a rolling raw history of the last hour for chart
+ * rendering (trimmed per append; see lib/metricsSeries).
  *
  * Features:
  *  - Auto-reconnects with exponential backoff (1 s → 2 s → 4 s … max 30 s)
  *  - Shares one socket across subscribers to avoid reconnect delays on route switches
  *  - Keeps the socket alive briefly after unmount so returning to Dashboard is instant
- *  - Exposes `status` so the UI can show a connection indicator
+ *  - Samples carry the backend's own UTC timestamp with a receipt-time
+ *    fallback for older backends that do not send one
+ *  - Exposes `status` and the current sample's effective time
  *
  * @example
  * ```tsx
- * const { current, history, status } = useMetricsWS();
+ * const { current, currentTs, history, status } = useMetricsWS();
  * ```
  */
 
 import { useEffect, useState } from 'react';
+import { openAdminSocket, SESSION_ENDED } from '../api/authApi';
+import { parseMetricsTimestamp, trimToHour } from '../metrics/metricsSeries';
+import type { ChartPoint } from '../metrics/metricsSeries';
 import type { MetricsSnapshot, WSStatus } from '../types/metrics';
 
-export interface ChartPoint {
-  ts: number;
-  time: string;
-  cpu: number;
-  ram: number;
-  ram_used_gb: number;
-  disk: number;
-  net_sent: number;
-  net_recv: number;
-}
+export type { ChartPoint };
 
 interface UseMetricsWSResult {
   /** Latest metrics snapshot, or null if not yet received. */
   current: MetricsSnapshot | null;
-  /** Rolling 60-point history for chart rendering. */
+  /** Effective sample time (epoch ms) of `current`: the backend timestamp
+   * when provided, otherwise the client receive time. Null before the
+   * first sample. */
+  currentTs: number | null;
+  /** Raw rolling one-hour history for chart rendering. */
   history: ChartPoint[];
   /** WebSocket connection status. */
   status: WSStatus;
 }
 
-const MAX_HISTORY = 60;
 const INITIAL_RETRY_MS = 1_000;
 const MAX_RETRY_MS = 30_000;
 const IDLE_CLOSE_DELAY_MS = 60_000;
@@ -50,23 +49,20 @@ type Listener = (state: MetricsState) => void;
 
 const listeners = new Set<Listener>();
 let ws: WebSocket | null = null;
+let connecting: AbortController | null = null;
 let retryMs = INITIAL_RETRY_MS;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let idleCloseTimer: ReturnType<typeof setTimeout> | null = null;
 
 let sharedCurrent: MetricsSnapshot | null = null;
+let sharedCurrentTs: number | null = null;
 let sharedHistory: ChartPoint[] = [];
 let sharedStatus: WSStatus = 'connecting';
-
-/** Build the WebSocket URL relative to the current page. */
-function buildWsUrl(): string {
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${proto}//${window.location.host}/ws/metrics`;
-}
 
 function getState(): MetricsState {
   return {
     current: sharedCurrent,
+    currentTs: sharedCurrentTs,
     history: sharedHistory,
     status: sharedStatus,
   };
@@ -93,6 +89,8 @@ function clearIdleCloseTimer(): void {
 
 function closeSocket(): void {
   clearReconnectTimer();
+  connecting?.abort();
+  connecting = null;
   if (!ws) return;
 
   ws.onopen = null;
@@ -118,14 +116,28 @@ function scheduleReconnect(): void {
   }, delay);
 }
 
-function connectSocket(): void {
+async function connectSocket(): Promise<void> {
   clearIdleCloseTimer();
   clearReconnectTimer();
 
   if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) return;
-  if (listeners.size === 0) return;
+  if (listeners.size === 0 || connecting) return;
 
-  const nextSocket = new WebSocket(buildWsUrl());
+  const controller = new AbortController();
+  connecting = controller;
+  let nextSocket: WebSocket;
+  try {
+    nextSocket = await openAdminSocket('/ws/metrics', controller.signal);
+  } catch {
+    if (!controller.signal.aborted) scheduleReconnect();
+    return;
+  } finally {
+    if (connecting === controller) connecting = null;
+  }
+  if (controller.signal.aborted) {
+    nextSocket.close();
+    return;
+  }
   ws = nextSocket;
   sharedStatus = sharedCurrent ? 'reconnecting' : 'connecting';
   notifyListeners();
@@ -142,23 +154,19 @@ function connectSocket(): void {
     try {
       const snapshot = JSON.parse(event.data as string) as MetricsSnapshot;
       sharedCurrent = snapshot;
-      const now = Date.now();
+      // Older backends send no timestamp — fall back to receipt time.
+      const sampleTs = parseMetricsTimestamp(snapshot.timestamp) ?? Date.now();
+      sharedCurrentTs = sampleTs;
 
       const point: ChartPoint = {
-        ts: now,
-        time: new Date(now).toLocaleTimeString(),
+        ts: sampleTs,
         cpu: snapshot.cpu_percent,
         ram: snapshot.ram_percent,
-        ram_used_gb: snapshot.ram_used_mb / 1024,
-        disk: snapshot.disk_percent,
         net_sent: snapshot.net_bytes_sent,
         net_recv: snapshot.net_bytes_recv,
       };
 
-      const nextHistory = [...sharedHistory, point];
-      sharedHistory = nextHistory.length > MAX_HISTORY
-        ? nextHistory.slice(nextHistory.length - MAX_HISTORY)
-        : nextHistory;
+      sharedHistory = trimToHour([...sharedHistory, point], sampleTs);
 
       notifyListeners();
     } catch {
@@ -188,6 +196,16 @@ function scheduleIdleClose(): void {
     sharedStatus = 'connecting';
   }, IDLE_CLOSE_DELAY_MS);
 }
+
+window.addEventListener(SESSION_ENDED, () => {
+  clearIdleCloseTimer();
+  closeSocket();
+  sharedHistory = [];
+  sharedCurrent = null;
+  sharedCurrentTs = null;
+  sharedStatus = 'connecting';
+  notifyListeners();
+});
 
 export function useMetricsWS(): UseMetricsWSResult {
   const [state, setState] = useState<MetricsState>(() => getState());

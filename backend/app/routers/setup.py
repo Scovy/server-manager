@@ -39,13 +39,18 @@ def _to_payload(request: SetupRequest) -> SetupPayload:
     )
 
 
+async def require_open_setup(db: AsyncSession = Depends(get_db)) -> None:
+    if (await get_setup_status(db))["initialized"]:
+        raise HTTPException(status_code=409, detail="Initial setup has already been completed.")
+
+
 @router.get("/status")
 async def setup_status(db: AsyncSession = Depends(get_db)) -> dict[str, object]:
     """Return whether the application has completed first-time setup."""
     return await get_setup_status(db)
 
 
-@router.post("/preflight")
+@router.post("/preflight", dependencies=[Depends(require_open_setup)])
 async def setup_preflight(request: SetupRequest) -> dict[str, object]:
     """Validate setup payload and host capabilities before initialization."""
     payload = _to_payload(request)
@@ -58,7 +63,7 @@ async def setup_preflight(request: SetupRequest) -> dict[str, object]:
     }
 
 
-@router.post("/initialize")
+@router.post("/initialize", dependencies=[Depends(require_open_setup)])
 async def setup_initialize(
     request: SetupRequest,
     background_tasks: BackgroundTasks,
@@ -67,6 +72,8 @@ async def setup_initialize(
     """Apply setup configuration, persist initialization state, and write env values."""
     payload = _to_payload(request)
     result = await initialize_setup(db, payload)
+    if result["status"] == "already_initialized":
+        raise HTTPException(status_code=409, detail="Initial setup has already been completed.")
     if result["status"] != "ok":
         raise HTTPException(status_code=400, detail=result)
     background_tasks.add_task(apply_runtime_handover)

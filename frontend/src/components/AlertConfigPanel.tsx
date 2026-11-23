@@ -54,7 +54,7 @@ export default function AlertConfigPanel() {
   };
 
   return (
-    <div className="card alert-panel">
+    <article className="card alert-panel">
       <div className="alert-panel__header" onClick={() => setExpanded(!expanded)}>
         <div className="alert-panel__title-group">
           <span className="alert-panel__icon">🔔</span>
@@ -142,8 +142,9 @@ export default function AlertConfigPanel() {
               </div>
             </form>
           )}
+
         </div>
       )}
-    </div>
+    </article>
   );
 }

@@ -7,6 +7,8 @@ set -e
 # Ensure the app package is in the PYTHONPATH
 export PYTHONPATH=$PYTHONPATH:.
 
+mkdir -p /app/data/apps /app/data/backups
+
 echo "Running database migrations..."
 alembic upgrade head
 

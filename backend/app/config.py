@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,6 +25,7 @@ class Settings(BaseSettings):
         env_file=Path(__file__).resolve().parent.parent / ".env",
         env_file_encoding="utf-8",
         case_sensitive=True,
+        hide_input_in_errors=True,
     )
 
     # Application
@@ -32,7 +34,7 @@ class Settings(BaseSettings):
     VERSION: str = "0.1.0"
 
     # Security
-    JWT_SECRET: str = "CHANGE-ME-IN-PRODUCTION"
+    JWT_SECRET: str = Field(default="", validate_default=True, repr=False)
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
@@ -50,6 +52,13 @@ class Settings(BaseSettings):
     # Metrics
     METRICS_WS_INTERVAL_SECONDS: float = 0.8
     METRICS_CONTAINER_REFRESH_SECONDS: float = 3.0
+
+    @field_validator("JWT_SECRET")
+    @classmethod
+    def validate_jwt_secret(cls, value: str) -> str:
+        if not value.strip() or value.strip() == "CHANGE-ME-IN-PRODUCTION":
+            raise ValueError("Generate an instance-specific JWT_SECRET before starting the panel.")
+        return value
 
     @property
     def cors_origins_list(self) -> list[str]:

@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.database import get_db
 from app.main import app
 from app.models import Base
+from app.models.user import User
+from app.services.auth_service import issue_tokens
 
 
 @pytest_asyncio.fixture
@@ -53,3 +55,13 @@ async def client(async_db: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
         yield ac
 
     app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture
+async def admin_session(client: AsyncClient, async_db: AsyncSession) -> str:
+    admin = User(username="test-admin", password="unused", role="admin")
+    async_db.add(admin)
+    await async_db.commit()
+    token = issue_tokens(admin, 0).access_token
+    client.headers["Authorization"] = f"Bearer {token}"
+    return token
